@@ -1,0 +1,87 @@
+# BIOS / firmware files the installed RetroArch cores look for.
+#
+# Format:  <filename>|<md5 or ->|<need>|<cores>|<what it is>|<hash source>
+#
+#   need        optional     - the core runs without it (built-in fallback)
+#               feature      - needed only for the named feature (Mega CD, PCE CD, FDS)
+#               recommended  - the core's own fallback is noticeably worse
+#   hash source info         - hash printed by the core's own .info file on this box
+#                              (/usr/share/libretro/info/, package libretro-core-info)
+#               docs         - hash from the libretro documentation for that core
+#               -            - no hash documented anywhere; any dump is accepted
+#
+# The files themselves are copyrighted by their manufacturers. They are NOT part of
+# this project: dump them from your own hardware or obtain them lawfully. This file
+# only records what the cores look for, so `bios-check` can tell you what is in
+# place and whether the file you put there is the dump the core expects.
+#
+# Nintendo 64 is deliberately absent: mupen64plus_next_libretro.info has no firmware
+# section, so ordinary N64 cartridge games need no BIOS at all. The 64DD disk add-on
+# would want bios/Mupen64plus/IPL.n64 (md5 8d3d9f294b6e174bc7b1d2fd1c727530) in a
+# subdirectory; no 64DD support is installed here.
+
+# --- Sony PlayStation (pcsx_rearmed) ---
+scph5500.bin|8dd7d5296a650fac7319bce665a6a53c|recommended|psx|PS1 BIOS, Japan (SCPH-5500)|info
+scph5501.bin|490f666e1afb15b7362b406ed1cea246|recommended|psx|PS1 BIOS, US (SCPH-5501)|info
+scph5502.bin|32736f17079d0b2b7024407c39bd3050|recommended|psx|PS1 BIOS, Europe (SCPH-5502)|info
+scph1001.bin|924e392ed05558ffdb115408c263dccf|optional|psx|PS1 BIOS v2.0, US|docs
+scph7001.bin|1e68c231d0896b7eadcad1d7d8e76129|optional|psx|PS1 BIOS v4.1, US|docs
+scph101.bin|6e3735ff4c7dc899ee98981385f6f3d0|optional|psx|PS1 BIOS v4.4, US|docs
+psxonpsp660.bin|c53ca5908936d412331790f4426c6c33|optional|psx|PS1 BIOS from the PSP (preferred name)|docs
+PSXONPSP660.bin|c53ca5908936d412331790f4426c6c33|optional|psx|same dump, upper-case spelling some cores use|docs
+
+# --- Sega Mega CD / Sega CD (genesis_plus_gx) ---
+bios_CD_U.bin|854b9150240a198070150e4566ae1290|feature|megacd|Sega CD BIOS, US|docs
+bios_CD_E.bin|e66fa1dc5820d254611fdcdba0662372|feature|megacd|Mega-CD BIOS, Europe|docs
+bios_CD_J.bin|278a9397d192149e84e820ac621a8edd|feature|megacd|Mega-CD BIOS, Japan|docs
+
+# --- Sega Mega Drive / Master System / Game Gear (genesis_plus_gx) ---
+bios_MD.bin|45e298905a08f9cfb38fd504cd6dbc84|optional|megadrive|Mega Drive startup ROM (needs System Boot ROM = On)|docs
+bios_U.sms|840481177270d5642a14ca71ee72844c|optional|mastersystem|Master System BIOS, US|docs
+bios_E.sms|840481177270d5642a14ca71ee72844c|optional|mastersystem|Master System BIOS, Europe (same dump as US)|docs
+bios_J.sms|24a519c53f67b00640d0048ef7089105|optional|mastersystem|Master System BIOS, Japan|docs
+bios.gg|672e104c3be3a238301aceffc3b23fd6|optional|gamegear|Game Gear BIOS|docs
+sk.bin|4ea493ea4e9f6c9ebfccbdb15110367e|optional|megadrive|Sonic & Knuckles ROM (Cartridge Lock-On)|info
+sk2chip.bin|b4e76e416b887f4e7413ba76fa735f16|optional|megadrive|Sonic & Knuckles UPMEM ROM (Cartridge Lock-On)|info
+areplay.bin|a0028b3043f9d59ceeb03da5b073b30d|optional|megadrive|Action Replay ROM (Cartridge Lock-On)|docs
+ggenie.bin|e8af7fe115a75c849f6aab3701e7799b|optional|megadrive|Game Genie ROM (Cartridge Lock-On)|docs
+
+# --- PC Engine / TurboGrafx-16 CD (mednafen_pce_fast) ---
+syscard3.pce|38179df8f4ac870017db21ebcbf53114|feature|pce|CD-ROM System Card 3.0 (Super CD-ROM)|info
+syscard2.pce|-|optional|pce|CD-ROM System Card 2.0|-
+syscard1.pce|-|optional|pce|CD-ROM System Card 1.0|-
+gexpress.pce|-|optional|pce|Games Express CD Card|-
+
+# --- Game Boy / Game Boy Color (gambatte, mgba) ---
+# The .info files list these for gambatte too, but Debian's gambatte build has no
+# bootloader option at all (no such core option, no such string in the .so), so in
+# practice only mGBA reads them.
+gb_bios.bin|32fbbd84168d3482956eb3c5051637f5|optional|gb,gbc|Game Boy boot ROM; only mGBA reads it (gambatte has no bootloader option)|info
+gbc_bios.bin|dbfce9db9deaa2567f6a84fde55f9680|optional|gbc|Game Boy Color boot ROM; only mGBA reads it|info
+
+# --- Game Boy Advance (mgba) ---
+gba_bios.bin|a860e8c0b6d573d191e4ec7db1b1e4f6|optional|gba|Game Boy Advance BIOS (Use BIOS file if found)|info
+sgb_bios.bin|d574d4f9c12f305074798f54c091a8b4|optional|gb|Super Game Boy BIOS; the same dump as snes' sgb.boot.rom|docs
+
+# --- NES / Famicom Disk System (nestopia) ---
+disksys.rom|ca30b50f880eb660a320674ed365ef7a|feature|nes|Famicom Disk System BIOS (.fds games)|info
+
+# --- SNES coprocessors (bsnes_mercury_performance); the core HLEs these when absent ---
+cx4.data.rom|037ac4296b6b6a5c47c440188d3c72e3|optional|snes|Cx4 data ROM; the core asks for it although its .info omits it (Cx4 games are documented broken)|docs
+dsp1.data.rom|3d81b45fa0c2aa8b852dfb1ece7c0971|optional|snes|DSP-1 data ROM (Super Mario Kart, Pilotwings)|docs
+dsp1.program.rom|ae209fbe789fbf11a48aea5ab1197321|optional|snes|DSP-1 program ROM|docs
+dsp1b.data.rom|1e3f568634a7d8284020dddc0ae905bc|optional|snes|DSP-1B data ROM|docs
+dsp1b.program.rom|d10f446888e097cbf500f3f663cf4f6d|optional|snes|DSP-1B program ROM|docs
+dsp2.data.rom|e9417e29223b139c3c4b635a2a3b8744|optional|snes|DSP-2 data ROM (Dungeon Master)|docs
+dsp2.program.rom|aa6e5922a3ed5ded54f24247c11143c5|optional|snes|DSP-2 program ROM|docs
+dsp3.data.rom|0a81210c0a940b997dd9843281008ee6|optional|snes|DSP-3 data ROM (SD Gundam GX)|docs
+dsp3.program.rom|d99ca4562818d49cee1f242705bba6f8|optional|snes|DSP-3 program ROM|docs
+dsp4.data.rom|ee4990879eb68e3cbca239c5bc20303d|optional|snes|DSP-4 data ROM (Top Gear 3000)|docs
+dsp4.program.rom|a151023b948b90ffc23a5b594bb6fef2|optional|snes|DSP-4 program ROM|docs
+st010.data.rom|254d70762b6f59f99c27c395aba7d07d|optional|snes|ST010 data ROM|docs
+st010.program.rom|1d70019179a59a566a0bb5d3f2845544|optional|snes|ST010 program ROM|docs
+st011.data.rom|10bd3f4aa949737ab9836512c35bcc29|optional|snes|ST011 data ROM|docs
+st011.program.rom|95222ebf1c0c2990bcf25db43743f032|optional|snes|ST011 program ROM|docs
+st018.data.rom|49c898b60d0f15e90d0ba780dd12f366|optional|snes|ST018 data ROM|docs
+st018.program.rom|dda40ccd57390c96e49d30a041f9a9e7|optional|snes|ST018 program ROM|docs
+sgb.boot.rom|-|optional|snes|Super Game Boy boot image|-

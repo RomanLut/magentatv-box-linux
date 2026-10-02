@@ -1,0 +1,26 @@
+#!/bin/sh
+# /usr/local/bin/youtube-tv (checks/41, "YouTube: TV interface"): YouTube's TV
+# interface (youtube.com/tv, as on Android TV and smart TVs) full screen, made for
+# the remote: arrows, OK, Back. It is Raspberry Pi's Chromium (via
+# /usr/local/bin/chromium, so as the user "browser" with its sandbox) in kiosk
+# mode on its own profile, with a smart TV's user agent: YouTube serves the TV
+# page only to TVs and sends every other browser to the normal site.
+#
+# The own profile keeps its guest choice or sign-in apart from the normal
+# browser. Like any second Chromium profile it closes a running Chromium first
+# (chromium-single: two instances break full screen). Leave with the remote's Home
+# or Alt+F4.
+#
+# The mouse pointer is hidden from the start and 5 s after the last movement, by
+# unclutter (unclutter-xfixes) running only as long as YouTube TV does: it hides the
+# pointer on the whole screen, so it must not outlive this browser.
+UA='Mozilla/5.0 (SMART-TV; LINUX; Tizen 6.0) AppleWebKit/537.36 (KHTML, like Gecko) 76.0.3809.146/6.0 TV Safari/537.36'
+U=
+if [ -n "$DISPLAY" ] && command -v unclutter >/dev/null; then
+	unclutter --timeout 5 --start-hidden &
+	U=$!
+fi
+trap '[ -n "$U" ] && kill "$U" 2>/dev/null' EXIT
+trap 'exit 143' TERM INT
+/usr/local/bin/chromium --user-data-dir=/home/browser/.config/youtube-tv \
+	--user-agent="$UA" --kiosk --no-first-run "$@" https://www.youtube.com/tv

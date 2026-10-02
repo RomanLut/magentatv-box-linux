@@ -1,0 +1,9 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=glmark2 (GPU benchmark)
+Comment=OpenGL ES 2 benchmark on the V3D GPU, full screen; the score stays in the terminal
+Exec=xfce4-terminal --hold --title=glmark2 -e "glmark2-es2 --fullscreen"
+Icon=/usr/share/icons/Adwaita/48x48/legacy/preferences-desktop-display.png
+Terminal=false
+Categories=System;

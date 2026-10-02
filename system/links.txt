@@ -1,0 +1,23 @@
+# Links install.sh makes (git on Windows keeps no symbolic links): <link> <target>
+usr/local/bin/chromium-browser chromium
+usr/local/bin/doom retro-run
+usr/local/bin/gamegear retro-run
+usr/local/bin/gb retro-run
+usr/local/bin/gba retro-run
+usr/local/bin/gbc retro-run
+usr/local/bin/genesis retro-run
+usr/local/bin/mastersystem retro-run
+usr/local/bin/megacd retro-run
+usr/local/bin/megadrive retro-run
+usr/local/bin/n64 retro-run
+usr/local/bin/nes retro-run
+usr/local/bin/pce retro-run
+usr/local/bin/psp retro-run
+usr/local/bin/psx retro-run
+usr/local/bin/quake2 retro-run
+usr/local/bin/scummvm retro-run
+usr/local/bin/snes retro-run
+usr/local/bin/wolf3d retro-run
+# PulseAudio runs system-wide only: no per-user daemons (they took the Bluetooth headset profiles)
+etc/systemd/user/pulseaudio.service /dev/null
+etc/systemd/user/pulseaudio.socket /dev/null

@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">
+  <!-- SPDX-License-Identifier: GPL-3.0-or-later; Copyright (C) 2026 Roman Lut -->
+  <!-- youtube-tv launcher icon (work/desktop/youtube-tv): red play button filling the width, like the Chromium icon -->
+  <rect x="2" y="22" width="124" height="86" rx="24" fill="#ff0000"/>
+  <path d="M51 44 L87 65 L51 86 Z" fill="#ffffff"/>
+</svg>

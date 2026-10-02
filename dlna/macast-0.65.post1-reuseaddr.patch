@@ -1,0 +1,13 @@
+--- a/macast/ssdp.py
++++ b/macast/ssdp.py
+@@ -120,6 +120,10 @@
+             except socket.error as e:
+                 logger.error("SSDP cannot set SO_REUSEADDR")
+                 logger.error(str(e))
++        # MagentaTV Box Linux: minidlna on the same box binds UDP 1900 with SO_REUSEADDR only, and
++        # Linux shares a port only between sockets that set the same option
++        if sys.platform.startswith("linux"):
++            self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+ 
+         # self.sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, 10)
+ 

@@ -1,0 +1,1867 @@
+From ca8a202af72868d7310a8fb8a21c4f9ea2f60eca Mon Sep 17 00:00:00 2001
+From: Christopher Michael <cmichael@igalia.com>
+Date: Fri, 8 Jul 2022 13:58:45 +0200
+Subject: [PATCH xserver 3/4] modesetting: Add DRI3 support to modesetting
+ driver with glamor disabled
+
+This patch enables OpenGL/ES applications to use the HW accelerated
+graphics driver while the Xserver composition uses the software
+rendered.
+
+This new addition to the modesetting driver can be enabled adding
+the msdri3 parameter on the AccelMethod option. So glamor will not
+be enabled for the KMS modesetting driver.
+
+Section "Device"
+       Identifier "kms"
+       Driver "modesetting"
+       Option "AccelMethod" "msdri3"
+EndSection
+
+The motivation of this work is to avoid Xserver to use CMA memory
+on Raspberry Pi [123] VC4 driver, so Xserver doesn't suffer on
+allocation memory errors that would crash desktop environment when
+we run out of GPU/CMA memory.
+
+This setup is only expected to be used for pre-RPi4 hw, as RPI4 V3D has
+MMU so the limitation of CMA availability is not an issue for the Xserver
+regular operation.
+
+Compared with glamor enabled on VC4, piglit results on egl/glx tests
+report a regression pass->fail on glx_extension_string_sanity
+test and 3 glx_swap-event* tests are pass->skip. All changes are
+because DRI2 is not available.
+
+v2: Set flag GBM_BO_TRANSFER_READ_WRITE on gbm_bo_map.
+v3: Fixes regression on DPMS not working.
+    Rebase to Xserver at debian Bookworm.
+    Removal of ifdef for MS_DRI3 when GBM_BO_WITH_MODIFIERS was in place
+    as GBM_BO_WITH_MODIFIERS is a requiremnt for MS_DRI3.
+v4: msdri3 should use dumb buffers for randr shadow buffers
+
+Signed-off-by: Christopher Michael <cmichael@igalia.com>
+Signed-off-by: Jose Maria Casanova Crespo <jmcasanova@igalia.com>
+---
+ configure.ac                                  |  28 +
+ hw/xfree86/drivers/modesetting/Makefile.am    |  16 +
+ hw/xfree86/drivers/modesetting/dri3.c         | 767 ++++++++++++++++++
+ hw/xfree86/drivers/modesetting/dri3_sync.c    | 126 +++
+ hw/xfree86/drivers/modesetting/driver.c       | 165 +++-
+ hw/xfree86/drivers/modesetting/driver.h       |  19 +-
+ .../drivers/modesetting/drmmode_display.c     |  78 +-
+ .../drivers/modesetting/drmmode_display.h     |  29 +-
+ hw/xfree86/drivers/modesetting/meson.build    |   3 +
+ .../drivers/modesetting/modesetting.man       |   5 +-
+ hw/xfree86/drivers/modesetting/pageflip.c     |  15 +-
+ hw/xfree86/drivers/modesetting/present.c      |  25 +-
+ include/dix-config.h.in                       |   3 +
+ include/meson.build                           |   3 +
+ meson.build                                   |  14 +
+ 15 files changed, 1230 insertions(+), 66 deletions(-)
+ create mode 100644 hw/xfree86/drivers/modesetting/dri3.c
+ create mode 100644 hw/xfree86/drivers/modesetting/dri3_sync.c
+
+diff --git a/configure.ac b/configure.ac
+index 81345c550..bd048784b 100644
+--- a/configure.ac
++++ b/configure.ac
+@@ -543,6 +543,7 @@ AC_ARG_ENABLE(glx,            AS_HELP_STRING([--disable-glx], [Build GLX extensi
+ AC_ARG_ENABLE(dri,            AS_HELP_STRING([--enable-dri], [Build DRI extension (default: auto)]), [DRI=$enableval])
+ AC_ARG_ENABLE(dri2,           AS_HELP_STRING([--enable-dri2], [Build DRI2 extension (default: auto)]), [DRI2=$enableval], [DRI2=auto])
+ AC_ARG_ENABLE(dri3,           AS_HELP_STRING([--enable-dri3], [Build DRI3 extension (default: auto)]), [DRI3=$enableval], [DRI3=auto])
++AC_ARG_ENABLE(ms-dri3,        AS_HELP_STRING([--enable-ms-dri3], [Build Modesettings with DRI3 extension without glamor (default: auto)]), [MS_DRI3=$enableval], [MS_DRI3=auto])
+ AC_ARG_ENABLE(present,	      AS_HELP_STRING([--disable-present], [Build Present extension (default: enabled)]), [PRESENT=$enableval], [PRESENT=yes])
+ AC_ARG_ENABLE(xinerama,	      AS_HELP_STRING([--disable-xinerama], [Build Xinerama extension (default: enabled)]), [XINERAMA=$enableval], [XINERAMA=yes])
+ AC_ARG_ENABLE(xf86vidmode,    AS_HELP_STRING([--disable-xf86vidmode], [Build XF86VidMode extension (default: auto)]), [XF86VIDMODE=$enableval], [XF86VIDMODE=auto])
+@@ -2025,6 +2026,33 @@ AM_CONDITIONAL([XORG_BUS_PLATFORM], [test "x$CONFIG_UDEV_KMS" = xyes])
+ AM_CONDITIONAL([XORG_DRIVER_MODESETTING], [test "x$XORG_DRIVER_MODESETTING" = xyes])
+ AM_CONDITIONAL([XORG_DRIVER_INPUT_INPUTTEST], [test "x$XORG_DRIVER_INPUT_INPUTTEST" = xyes])
+ 
++
++case x"$MS_DRI3" in
++  xyes|xauto)
++	PKG_CHECK_MODULES([MS_DRI3], [epoxy])
++	PKG_CHECK_MODULES(EPOXY, epoxy >= 1.5.4 , [MSDRI3EPOXY=yes], [MSDRI3EPOXY=no])
++	PKG_CHECK_MODULES(GBM, gbm >= 17.1.0, [MSDRI3GBM=yes], [MSDRI3GBM=no])
++	if test "x$XORG_DRIVER_MODESETTING,$MSDRI3GBM,$MSDRI3EPOXY,$DRI3" = xyes,yes,yes,yes; then
++		AC_DEFINE(MS_DRI3, 1, [Build ms_dri3])
++		AC_MSG_NOTICE([Modesetting DRI3 available even if glamor disabled]);
++		MS_DRI3=yes
++	elif test "x$MS_DRI3" = "xauto"; then
++		AC_MSG_NOTICE([Modesetting DRI3 disabled if glamor disabled]);
++		MS_DRI3=no
++	elif test "x$XORG_DRIVER_MODESETTING" != "xyes"; then
++		AC_MSG_ERROR([ms_dri3 for Xorg requires modesseting driver build])
++	elif test "x$DRI3" != "xyes"; then
++		AC_MSG_ERROR([ms_dri3 for Xorg requires DRI3 enabled])
++	elif test "x$MSDRI3GBM" != "xyes"; then
++		AC_MSG_ERROR([ms_dri3 for Xorg requires gbm >= 17.1.0])
++	elif test "x$MSDRI3EPOXY" != "xyes"; then
++		AC_MSG_ERROR([ms_dri3 for Xorg requires epoxy >= 1.5.4])
++	fi
++	;;
++esac
++
++AM_CONDITIONAL([MS_DRI3], [test "x$MS_DRI3" = xyes])
++
+ dnl glamor
+ if test "x$GLAMOR" = xauto; then
+ 	if echo "$XORG" "$XEPHYR" | grep -q yes ; then
+diff --git a/hw/xfree86/drivers/modesetting/Makefile.am b/hw/xfree86/drivers/modesetting/Makefile.am
+index 961c57408..44bc0eaae 100644
+--- a/hw/xfree86/drivers/modesetting/Makefile.am
++++ b/hw/xfree86/drivers/modesetting/Makefile.am
+@@ -57,6 +57,22 @@ modesetting_drv_la_SOURCES = \
+ 	 pageflip.c \
+ 	 $(NULL)
+ 
++if MS_DRI3
++AM_CFLAGS += \
++       $(GBM_CFLAGS)
++
++AM_CPPFLAGS += \
++	-I$(top_srcdir)/dri3
++
++modesetting_drv_la_SOURCES += \
++	dri3.c \
++	dri3_sync.c
++
++modesetting_drv_la_LIBADD += \
++	$(MS_DRI3_LIBS) \
++	$(GBM_LIBS)
++endif
++
+ drivermandir = $(DRIVER_MAN_DIR)
+ driverman_PRE = modesetting.man
+ driverman_DATA = $(driverman_PRE:man=@DRIVER_MAN_SUFFIX@)
+diff --git a/hw/xfree86/drivers/modesetting/dri3.c b/hw/xfree86/drivers/modesetting/dri3.c
+new file mode 100644
+index 000000000..a0a942cad
+--- /dev/null
++++ b/hw/xfree86/drivers/modesetting/dri3.c
+@@ -0,0 +1,767 @@
++/*
++ * Copyright © 2010 Intel Corporation.
++ * Copyright @ 2022 Raspberry Pi Ltd
++ *
++ * Permission is hereby granted, free of charge, to any person
++ * obtaining a copy of this software and associated documentation
++ * files (the "Software"), to deal in the Software without
++ * restriction, including without limitation the rights to use, copy,
++ * modify, merge, publish, distribute, sublicense, and/or sell copies
++ * of the Software, and to permit persons to whom the Software is
++ * furnished to do so, subject to the following conditions:
++ *
++ * The above copyright notice and this permission notice (including
++ * the next paragraph) shall be included in all copies or substantial
++ * portions of the Software.
++ *
++ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
++ * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
++ * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
++ * NONINFRINGEMENT.  IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT
++ * HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY,
++ * WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
++ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
++ * DEALINGS IN THE SOFTWARE.
++ *
++ * Authors:
++ *    Zhigang Gong <zhigang.gong@linux.intel.com>
++ *    Christopher Michael <cmichael@igalia.com>
++ *    Jose Maria Casanova Crespo <jmcasanova@igalia.com>
++ */
++
++#ifdef HAVE_DIX_CONFIG_H
++#include "dix-config.h"
++#endif
++
++#include "xf86.h"
++#include "driver.h"
++#include "dri3.h"
++#include <drm_fourcc.h>
++#include <drm_mode.h>
++#include <unistd.h>
++#include <fcntl.h>
++#include <sys/mman.h>
++#include <sys/ioctl.h>
++
++#ifdef MS_DRI3
++static Bool ms_dri3_modifiers_get(ScreenPtr screen, uint32_t format, uint32_t *num, uint64_t **modifiers);
++
++static void *
++ms_dri3_pixmap_map_bo(msPixmapPrivPtr ppriv, struct gbm_bo *bo)
++{
++    void *baddr;
++    uint32_t bstride, bw, bh;
++
++    bw = gbm_bo_get_width(bo);
++    bh = gbm_bo_get_height(bo);
++    baddr = gbm_bo_map(bo, 0, 0, bw, bh, GBM_BO_TRANSFER_READ_WRITE,
++                       &bstride, &ppriv->bo_map);
++    if (baddr == MAP_FAILED) {
++       xf86DrvMsg(-1, X_ERROR, "Failed to map bo: %s\n", strerror(errno));
++       ppriv->bo = NULL;
++       gbm_bo_destroy(bo);
++       return NULL;
++    }
++
++   return baddr;
++}
++
++static Bool
++ms_dri3_pixmap_make_exportable(PixmapPtr pixmap, Bool mods)
++{
++    ScreenPtr screen = pixmap->drawable.pScreen;
++    ScrnInfoPtr scrn = xf86ScreenToScrn(screen);
++    modesettingPtr ms = modesettingPTR(scrn);
++    msPixmapPrivPtr pixmap_priv, exported_priv;
++    uint32_t format = GBM_FORMAT_ARGB8888;
++    struct gbm_bo *bo = NULL;
++    PixmapPtr exported;
++    void *baddr;
++    GCPtr sgc;
++
++    pixmap_priv = msGetPixmapPriv(&ms->drmmode, pixmap);
++
++    if (pixmap_priv->bo &&
++        (mods || !pixmap_priv->use_modifiers))
++        return TRUE;
++
++    if (pixmap->drawable.bitsPerPixel != 32) return FALSE;
++
++    switch (pixmap->drawable.depth) {
++     case 16:
++       format = GBM_FORMAT_RGB565;
++       break;
++     case 24:
++       format = GBM_FORMAT_XRGB8888;
++       break;
++     case 30:
++       format = GBM_FORMAT_ARGB2101010;
++       break;
++     default:
++       format = GBM_FORMAT_ARGB8888;
++       break;
++    }
++
++    exported = fbCreatePixmap(screen, 0, 0, pixmap->drawable.depth, 0);
++    exported_priv = msGetPixmapPriv(&ms->drmmode, exported);
++
++    if (mods) {
++       uint32_t num;
++       uint64_t *modifiers = NULL;
++
++       ms_dri3_modifiers_get(screen, format, &num, &modifiers);
++
++       bo = gbm_bo_create_with_modifiers(ms->drmmode.gbm,
++                                         pixmap->drawable.width,
++                                         pixmap->drawable.height,
++                                         format, modifiers, num);
++       if (bo)
++         exported_priv->use_modifiers = TRUE;
++       free(modifiers);
++    }
++
++    if (!bo) {
++       uint32_t flags = GBM_BO_USE_RENDERING | GBM_BO_USE_SCANOUT;
++
++       if (pixmap->usage_hint == CREATE_PIXMAP_USAGE_SHARED)
++         flags |= GBM_BO_USE_LINEAR;
++
++       bo = gbm_bo_create(ms->drmmode.gbm, pixmap->drawable.width,
++                          pixmap->drawable.height, format, flags);
++       if (!bo) goto map_fail;
++    }
++
++    exported_priv->bo = bo;
++
++    baddr = ms_dri3_pixmap_map_bo(exported_priv, bo);
++    if (!baddr) goto map_fail;
++
++    screen->ModifyPixmapHeader(exported, pixmap->drawable.width,
++                               pixmap->drawable.height, 0, 0,
++                               gbm_bo_get_stride(bo), baddr);
++
++    sgc = GetScratchGC(pixmap->drawable.depth, screen);
++    ValidateGC(&pixmap->drawable, sgc);
++    sgc->ops->CopyArea(&pixmap->drawable, &exported->drawable, sgc, 0, 0,
++                       pixmap->drawable.width, pixmap->drawable.height, 0, 0);
++    FreeScratchGC(sgc);
++
++    /* swap gbm_bo, data, etc */
++    ms_dri3_buffers_exchange(pixmap, exported);
++
++    screen->ModifyPixmapHeader(pixmap, pixmap->drawable.width,
++                               pixmap->drawable.height, 0, 0,
++                               exported->devKind, baddr);
++
++    fbDestroyPixmap(exported);
++    return TRUE;
++
++map_fail:
++    fbDestroyPixmap(exported);
++    return FALSE;
++}
++
++Bool
++ms_dri3_pixmap_from_gbm_bo(PixmapPtr pixmap, struct gbm_bo *bo)
++{
++    ScreenPtr screen = pixmap->drawable.pScreen;
++    uint32_t stride, w, h;
++
++    w = gbm_bo_get_width(bo);
++    h = gbm_bo_get_height(bo);
++    stride = gbm_bo_get_stride(bo);
++
++    screen->ModifyPixmapHeader(pixmap, w, h, 0, 0, stride, NULL);
++    return TRUE;
++}
++
++Bool
++ms_dri3_back_pixmap_from_fd(PixmapPtr pixmap, int fd, CARD16 width, CARD16 height, CARD16 stride, CARD8 depth, CARD8 bpp)
++{
++    ScreenPtr screen = pixmap->drawable.pScreen;
++    ScrnInfoPtr scrn = xf86ScreenToScrn(screen);
++    modesettingPtr ms = modesettingPTR(scrn);
++    msPixmapPrivPtr ppriv;
++    struct gbm_import_fd_data import = { 0 };
++    struct gbm_bo *bo;
++    void *baddr;
++
++    if ((bpp != 32) ||
++        !(depth == 24 || depth == 32 || depth == 30) || width == 0 || height == 0)
++       return FALSE;
++
++    import.fd = fd;
++    import.width = width;
++    import.height = height;
++    import.stride = stride;
++    import.format = GBM_FORMAT_ARGB8888;
++
++    switch (depth) {
++     case 16:
++       import.format = GBM_FORMAT_RGB565;
++       break;
++     case 24:
++       import.format = GBM_FORMAT_XRGB8888;
++       break;
++     case 30:
++       import.format = GBM_FORMAT_ARGB2101010;
++       break;
++     default:
++       import.format = GBM_FORMAT_ARGB8888;
++       break;
++    }
++
++    bo = gbm_bo_import(ms->drmmode.gbm, GBM_BO_IMPORT_FD, &import, 0);
++    if (!bo) {
++       xf86DrvMsg(scrn->scrnIndex, X_ERROR, "Failed to import bo: %s\n",
++                  strerror(errno));
++       return FALSE;
++    }
++
++    ppriv = msGetPixmapPriv(&ms->drmmode, pixmap);
++    ppriv->bo = bo;
++    ppriv->use_modifiers = FALSE;
++
++    baddr = ms_dri3_pixmap_map_bo(ppriv, bo);
++    if (!baddr) {
++       ppriv->bo = NULL;
++       gbm_bo_destroy(bo);
++       xf86DrvMsg(scrn->scrnIndex, X_ERROR, "Failed to map bo: %s\n",
++                  strerror(errno));
++       return FALSE;
++    }
++
++    screen->ModifyPixmapHeader(pixmap, width, height, 0, 0, stride, baddr);
++
++    return TRUE;
++}
++
++Bool
++ms_dri3_create_back_pixmap(PixmapPtr pixmap, int handle, int stride)
++{
++    ScreenPtr screen = pixmap->drawable.pScreen;
++    ScrnInfoPtr scrn = xf86ScreenToScrn(screen);
++    modesettingPtr ms = modesettingPTR(scrn);
++    int ret, fd;
++
++    ret = drmPrimeHandleToFD(ms->fd, handle, O_CLOEXEC | O_RDWR, &fd);
++    if (ret) {
++       xf86DrvMsg(scrn->scrnIndex, X_ERROR,
++                  "Failed to make prime FD for handle: %d\n", handle);
++       return FALSE;
++    }
++
++    if (!ms_dri3_back_pixmap_from_fd(pixmap, fd, pixmap->drawable.width,
++                                     pixmap->drawable.height, stride,
++                                     pixmap->drawable.depth,
++                                     pixmap->drawable.bitsPerPixel)) {
++       xf86DrvMsg(scrn->scrnIndex, X_ERROR,
++                  "Failed to make import prime FD as pixmap: %d\n", errno);
++       close(fd);
++       return FALSE;
++    }
++
++    close(fd);
++    return TRUE;
++}
++
++static int
++ms_dri3_render_node(int fd, struct stat *st)
++{
++    if (fstat(fd, st)) return -1;
++    if (!S_ISCHR(st->st_mode)) return -1;
++    return (st->st_rdev & 0x80);
++}
++
++static int
++ms_dri3_open(ScreenPtr screen, RRProviderPtr provider, int *out)
++{
++    ScrnInfoPtr scrn = xf86ScreenToScrn(screen);
++    modesettingPtr ms = modesettingPTR(scrn);
++    struct stat buff;
++    char *dev;
++    int fd = -1;
++
++    dev = drmGetDeviceNameFromFd2(ms->fd);
++
++# ifdef O_CLOEXEC
++    fd = open(dev, O_RDWR | O_CLOEXEC);
++# endif
++    if (fd < 0)
++       fd = open(dev, O_RDWR);
++
++    free(dev);
++    if (fd < 0) return -BadMatch;
++
++    if (fstat(fd, &buff)) {
++       close(fd);
++       return -BadMatch;
++    }
++
++    if (!ms_dri3_render_node(fd, &buff)) {
++       drm_magic_t magic;
++
++       if ((drmGetMagic(fd, &magic)) || (drmAuthMagic(ms->fd, magic))) {
++          close(fd);
++          return -BadMatch;
++       }
++    }
++
++    *out = fd;
++    return Success;
++}
++
++static inline Bool
++ms_dri3_find_modifier(uint64_t modifier, const uint64_t *modifiers, unsigned int count)
++{
++    unsigned int i;
++
++    for (i = 0; i < count; i++) {
++        if (modifiers[i] == modifier)
++           return TRUE;
++    }
++
++   return FALSE;
++}
++
++static Bool
++ms_dri3_formats_get(ScreenPtr screen, CARD32 *num, CARD32 **formats)
++{
++    ScrnInfoPtr scrn = xf86ScreenToScrn(screen);
++    xf86CrtcConfigPtr xcfg = XF86_CRTC_CONFIG_PTR(scrn);
++    modesettingPtr ms = modesettingPTR(scrn);
++    int c = 0, i = 0;
++
++    *num = 0;
++
++    if (ms->atomic_modeset || ms->kms_has_modifiers) {
++       for (; c < xcfg->num_crtc; c++) {
++           xf86CrtcPtr crtc = xcfg->crtc[c];
++           drmmode_crtc_private_ptr dcrtc = crtc->driver_private;
++
++           if (!crtc->enabled)
++              continue;
++
++           if (dcrtc->num_formats == 0)
++              continue;
++
++           *formats = calloc(dcrtc->num_formats, sizeof(CARD32));
++           if (!*formats)
++              return FALSE;
++
++           for (i = 0; i < dcrtc->num_formats; i++)
++               (*formats)[i] = dcrtc->formats[i].format;
++
++           *num = dcrtc->num_formats;
++           break;
++       }
++    }
++
++    return TRUE;
++}
++
++static inline uint32_t
++ms_dri3_opaque_format_get(uint32_t format)
++{
++    switch (format) {
++     case DRM_FORMAT_ARGB8888:
++       return DRM_FORMAT_XRGB8888;
++     case DRM_FORMAT_ARGB2101010:
++       return DRM_FORMAT_XRGB2101010;
++     default:
++       return format;
++    }
++}
++
++static Bool
++ms_dri3_modifiers_get(ScreenPtr screen, uint32_t format, uint32_t *num, uint64_t **modifiers)
++{
++    ScrnInfoPtr scrn = xf86ScreenToScrn(screen);
++    modesettingPtr ms = modesettingPTR(scrn);
++
++    *num = 0;
++    *modifiers = NULL;
++
++    if (ms->atomic_modeset || ms->kms_has_modifiers) {
++       xf86CrtcConfigPtr xcfg = XF86_CRTC_CONFIG_PTR(scrn);
++       drmmode_format_ptr dformat = NULL;
++       int c = 0, i = 0, j = 0;
++
++       format = ms_dri3_opaque_format_get(format);
++
++       for (; c < xcfg->num_crtc; c++) {
++           xf86CrtcPtr crtc = xcfg->crtc[c];
++           drmmode_crtc_private_ptr dcrtc = crtc->driver_private;
++
++           if (!crtc->enabled)
++              continue;
++
++           if (dcrtc->num_formats == 0)
++              continue;
++
++           for (i = 0; i < dcrtc->num_formats; i++) {
++               if ((dcrtc->formats[i].format == format) &&
++                   (ms_dri3_find_modifier(DRM_FORMAT_MOD_LINEAR,
++                                          dcrtc->formats[i].modifiers,
++                                          dcrtc->formats[i].num_modifiers))) {
++                  dformat = &dcrtc->formats[i];
++                  for (j = 0; j < dformat->num_modifiers; j++) {
++                      if (dformat->modifiers[j] == DRM_FORMAT_MOD_LINEAR) {
++                         free(*modifiers);
++                         *modifiers = calloc(1, sizeof(uint64_t));
++                         if (!*modifiers) return FALSE;
++                         **modifiers = dformat->modifiers[j];
++                         *num = 1;
++                         return TRUE;
++                      }
++                  }
++               }
++           }
++       }
++    }
++
++    return TRUE;
++}
++
++static Bool
++ms_dri3_drawable_modifiers_get(DrawablePtr draw, uint32_t format, uint32_t *num, uint64_t **modifiers)
++{
++    ScrnInfoPtr scrn = xf86ScreenToScrn(draw->pScreen);
++    modesettingPtr ms = modesettingPTR(scrn);
++
++    if (ms->drmmode.get_drawable_modifiers)
++       return ms->drmmode.get_drawable_modifiers(draw, format, num, modifiers);
++
++    *num = 0;
++    *modifiers = NULL;
++    return TRUE;
++}
++
++static PixmapPtr
++ms_dri3_pixmap_from_fds(ScreenPtr screen, CARD8 num, const int *fds, CARD16 width, CARD16 height, const CARD32 *strides, const CARD32 *offsets, CARD8 depth, CARD8 bpp, uint64_t modifier)
++{
++    ScrnInfoPtr scrn = xf86ScreenToScrn(screen);
++    modesettingPtr ms = modesettingPTR(scrn);
++    PixmapPtr pixmap;
++    Bool ret = FALSE;
++    int i;
++
++    pixmap = fbCreatePixmap(screen, 0, 0, depth, 0);
++
++    if (modifier != DRM_FORMAT_MOD_INVALID) {
++       struct gbm_import_fd_modifier_data import = {0};
++       struct gbm_bo *bo;
++
++       import.width = width;
++       import.height = height;
++       import.num_fds = num;
++       import.modifier = modifier;
++       for (i = 0; i < num; i++) {
++           import.fds[i] = fds[i];
++           import.strides[i] = strides[i];
++           import.offsets[i] = offsets[i];
++       }
++
++       switch (depth) {
++        case 16:
++          import.format = GBM_FORMAT_RGB565;
++          break;
++        case 24:
++          import.format = GBM_FORMAT_XRGB8888;
++          break;
++        case 30:
++          import.format = GBM_FORMAT_ARGB2101010;
++          break;
++        default:
++          import.format = GBM_FORMAT_ARGB8888;
++          break;
++       }
++
++       bo = gbm_bo_import(ms->drmmode.gbm, GBM_BO_IMPORT_FD_MODIFIER, &import, 0);
++       if (bo) {
++          msPixmapPrivPtr ppriv;
++          void *baddr;
++
++          ppriv = msGetPixmapPriv(&ms->drmmode, pixmap);
++          ppriv->bo = bo;
++          ppriv->use_modifiers = TRUE;
++
++          baddr = ms_dri3_pixmap_map_bo(ppriv, bo);
++          if (!baddr) goto map_fail;
++
++          screen->ModifyPixmapHeader(pixmap, width, height, 0, 0,
++                                     strides[0], baddr);
++          ret = TRUE;
++       }
++    } else {
++       if (num == 1)
++          ret = ms_dri3_back_pixmap_from_fd(pixmap, fds[0], width, height,
++                                            strides[0], depth, bpp);
++    }
++
++    if (!screen->SetSharedPixmapBacking(pixmap, (void *)(intptr_t)fds[0]))
++       ret = FALSE;
++
++map_fail:
++    if (ret == FALSE) {
++       fbDestroyPixmap(pixmap);
++       return NULL;
++    }
++
++    return pixmap;
++}
++
++static int
++ms_dri3_fds_from_pixmap(ScreenPtr screen, PixmapPtr pixmap, int *fds, uint32_t *strides, uint32_t *offsets, uint64_t *modifier)
++{
++    ScrnInfoPtr scrn = xf86ScreenToScrn(screen);
++    modesettingPtr ms = modesettingPTR(scrn);
++    msPixmapPrivPtr ppriv;
++    struct gbm_bo *bo;
++    int num = 0, i;
++
++    if (!ms_dri3_pixmap_make_exportable(pixmap, TRUE))
++       return 0;
++
++    ppriv = msGetPixmapPriv(&ms->drmmode, pixmap);
++
++    if (!ppriv->bo)
++       ppriv->bo = ms_dri3_gbm_bo_from_pixmap(screen, pixmap);
++
++    bo = ppriv->bo;
++    if (!bo) {
++       xf86DrvMsg(scrn->scrnIndex, X_ERROR,
++                  "ms_dri3_fds_from_pixmap: pixmap has no bo\n");
++       return 0;
++    }
++
++    num = gbm_bo_get_plane_count(bo);
++    for (i = 0; i < num; i++) {
++        fds[i] = gbm_bo_get_fd(bo);
++        strides[i] = gbm_bo_get_stride_for_plane(bo, i);
++        offsets[i] = gbm_bo_get_offset(bo, i);
++    }
++    *modifier = gbm_bo_get_modifier(bo);
++
++   return num;
++}
++
++int
++ms_dri3_shareable_fd_from_pixmap(ScreenPtr screen, PixmapPtr pixmap, CARD16 *stride, CARD32 *size)
++{
++    ScrnInfoPtr scrn = xf86ScreenToScrn(screen);
++    modesettingPtr ms = modesettingPTR(scrn);
++    unsigned ohint = pixmap->usage_hint;
++    msPixmapPrivPtr ppriv;
++    struct gbm_bo *bo;
++    int fd = -1;
++
++    ppriv = msGetPixmapPriv(&ms->drmmode, pixmap);
++    if (!ppriv) return -1;
++
++    pixmap->usage_hint = CREATE_PIXMAP_USAGE_SHARED;
++
++    if (!ppriv->bo)
++     ppriv->bo = ms_dri3_gbm_bo_from_pixmap(screen, pixmap);
++
++    bo = ppriv->bo;
++    if (!bo) goto out;
++
++    fd = gbm_bo_get_fd(bo);
++    *stride = gbm_bo_get_stride(bo);
++    *size = *stride * gbm_bo_get_height(bo);
++
++out:
++    pixmap->usage_hint = ohint;
++    return fd;
++}
++
++struct gbm_bo *
++ms_dri3_gbm_bo_from_pixmap(ScreenPtr screen, PixmapPtr pixmap)
++{
++    ScrnInfoPtr scrn = xf86ScreenToScrn(screen);
++    modesettingPtr ms = modesettingPTR(scrn);
++    msPixmapPrivPtr ppriv;
++    uint32_t format = GBM_FORMAT_ARGB8888;
++    struct gbm_bo *bo;
++    uint32_t num;
++    uint64_t *modifiers = NULL;
++
++    if (!ms_dri3_pixmap_make_exportable(pixmap, TRUE)) return NULL;
++
++    ppriv = msGetPixmapPriv(&ms->drmmode, pixmap);
++    if (ppriv->bo) return ppriv->bo;
++
++    switch (pixmap->drawable.depth) {
++     case 16:
++       format = GBM_FORMAT_RGB565;
++       break;
++     case 24:
++       format = GBM_FORMAT_XRGB8888;
++       break;
++     case 30:
++       format = GBM_FORMAT_ARGB2101010;
++       break;
++     default:
++       format = GBM_FORMAT_ARGB8888;
++       break;
++    }
++
++    ms_dri3_modifiers_get(screen, format, &num, &modifiers);
++
++    bo = gbm_bo_create_with_modifiers(ms->drmmode.gbm,
++                                      pixmap->drawable.width,
++                                      pixmap->drawable.height,
++                                      format, modifiers, num);
++    free(modifiers);
++
++    if (!bo) {
++       xf86DrvMsg(scrn->scrnIndex, X_ERROR, "Failed to make GBM bo: %s\n",
++                  strerror(errno));
++       return NULL;
++    }
++
++   return bo;
++}
++
++void
++ms_dri3_set_drawable_modifiers_func(ScreenPtr screen, GetDrawableModifiersFuncPtr func)
++{
++    ScrnInfoPtr scrn = xf86ScreenToScrn(screen);
++    modesettingPtr ms = modesettingPTR(scrn);
++
++    ms->drmmode.get_drawable_modifiers = func;
++}
++
++Bool
++ms_dri3_destroy_pixmap(PixmapPtr pixmap)
++{
++   ScreenPtr screen = pixmap->drawable.pScreen;
++   ScrnInfoPtr scrn = xf86ScreenToScrn(screen);
++   modesettingPtr ms = modesettingPTR(scrn);
++
++   if (pixmap->refcnt == 1) {
++      msPixmapPrivPtr ppriv = msGetPixmapPriv(&ms->drmmode, pixmap);
++
++      if (ppriv && ppriv->bo) {
++         gbm_bo_unmap(ppriv->bo, ppriv->bo_map);
++         gbm_bo_destroy(ppriv->bo);
++      }
++   }
++
++   fbDestroyPixmap(pixmap);
++
++   return TRUE;
++}
++
++static Bool
++ms_dri3_flink_name_get(int fd, int handle, int *name)
++{
++    struct drm_gem_flink f;
++
++    f.handle = handle;
++    if (ioctl(fd, DRM_IOCTL_GEM_FLINK, &f) < 0) {
++       if (errno == ENODEV) {
++          *name = handle;
++          return TRUE;
++       }
++       else
++         return FALSE;
++    }
++
++    *name = f.name;
++    return TRUE;
++}
++
++static void
++ms_dri3_bo_name_get(int fd, struct gbm_bo *bo, int *name)
++{
++    union gbm_bo_handle hdl;
++
++    hdl = gbm_bo_get_handle(bo);
++    if (!ms_dri3_flink_name_get(fd, hdl.u32, name))
++      *name = -1;
++}
++
++int
++ms_dri3_pixmap_name_get(PixmapPtr pixmap, CARD16 *stride, CARD32 *size)
++{
++    ScreenPtr screen = pixmap->drawable.pScreen;
++    ScrnInfoPtr scrn = xf86ScreenToScrn(screen);
++    modesettingPtr ms = modesettingPTR(scrn);
++    msPixmapPrivPtr ppriv;
++    struct gbm_bo *bo;
++    int fd = -1;
++
++    ppriv = msGetPixmapPriv(&ms->drmmode, pixmap);
++
++    if (!ms_dri3_pixmap_make_exportable(pixmap, TRUE))
++      goto fail;
++
++    bo = ppriv->bo;
++    if (!bo) goto fail;
++
++    pixmap->devKind = gbm_bo_get_stride(bo);
++    ms_dri3_bo_name_get(ms->fd, bo, &fd);
++    *stride = pixmap->devKind;
++    *size = pixmap->devKind * gbm_bo_get_height(bo);
++
++fail:
++    return fd;
++}
++
++void
++ms_dri3_buffers_exchange(PixmapPtr front, PixmapPtr back)
++{
++    ScreenPtr screen = front->drawable.pScreen;
++    ScrnInfoPtr scrn = xf86ScreenToScrn(screen);
++    modesettingPtr ms = modesettingPTR(scrn);
++    msPixmapPrivPtr fpriv, bpriv;
++    Bool tmp_mod = FALSE;
++    struct gbm_bo *tmp_bo = NULL;
++    void *tmp_map;
++
++    fpriv = msGetPixmapPriv(&ms->drmmode, front);
++    bpriv = msGetPixmapPriv(&ms->drmmode, back);
++
++    tmp_bo = bpriv->bo;
++    tmp_map = bpriv->bo_map;
++    tmp_mod = bpriv->use_modifiers;
++
++    bpriv->bo = fpriv->bo;
++    bpriv->bo_map = fpriv->bo_map;
++    bpriv->use_modifiers = fpriv->use_modifiers;
++
++    fpriv->bo = tmp_bo;
++    fpriv->bo_map = tmp_map;
++    fpriv->use_modifiers = tmp_mod;
++}
++
++static dri3_screen_info_rec ms_dri3_screen_info =
++{
++    .version = DRI3_SCREEN_INFO_VERSION,
++    .open = ms_dri3_open,
++    .get_formats = ms_dri3_formats_get,
++    .get_modifiers = ms_dri3_modifiers_get,
++    .get_drawable_modifiers = ms_dri3_drawable_modifiers_get,
++    .pixmap_from_fds = ms_dri3_pixmap_from_fds,
++    .fds_from_pixmap = ms_dri3_fds_from_pixmap,
++};
++
++Bool
++ms_dri3_screen_init(ScreenPtr screen)
++{
++    ScrnInfoPtr scrn = xf86ScreenToScrn(screen);
++    modesettingPtr ms = modesettingPTR(scrn);
++    Bool ret = FALSE;
++
++    ms->drmmode.destroy_pixmap = screen->DestroyPixmap;
++    screen->DestroyPixmap = ms_dri3_destroy_pixmap;
++
++    ret = dri3_screen_init(screen, &ms_dri3_screen_info);
++    if (!ret)
++       xf86DrvMsg(-1, X_ERROR, "dri3_screen_init Failed !\n");
++
++    return ret;
++}
++#endif
+diff --git a/hw/xfree86/drivers/modesetting/dri3_sync.c b/hw/xfree86/drivers/modesetting/dri3_sync.c
+new file mode 100644
+index 000000000..7b83d1255
+--- /dev/null
++++ b/hw/xfree86/drivers/modesetting/dri3_sync.c
+@@ -0,0 +1,126 @@
++/*
++ * Copyright © 2014 Keith Packard
++ * Copyright @ 2022 Raspberry Pi Ltd
++ *
++ * Permission to use, copy, modify, distribute, and sell this software and its
++ * documentation for any purpose is hereby granted without fee, provided that
++ * the above copyright notice appear in all copies and that both that copyright
++ * notice and this permission notice appear in supporting documentation, and
++ * that the name of the copyright holders not be used in advertising or
++ * publicity pertaining to distribution of the software without specific,
++ * written prior permission.  The copyright holders make no representations
++ * about the suitability of this software for any purpose.  It is provided "as
++ * is" without express or implied warranty.
++ *
++ * THE COPYRIGHT HOLDERS DISCLAIM ALL WARRANTIES WITH REGARD TO THIS SOFTWARE,
++ * INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS, IN NO
++ * EVENT SHALL THE COPYRIGHT HOLDERS BE LIABLE FOR ANY SPECIAL, INDIRECT OR
++ * CONSEQUENTIAL DAMAGES OR ANY DAMAGES WHATSOEVER RESULTING FROM LOSS OF USE,
++ * DATA OR PROFITS, WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER
++ * TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE
++ * OF THIS SOFTWARE.
++ *
++ * Authors:
++ *    Christopher Michael <cmichael@igalia.com>
++ */
++
++#ifdef HAVE_DIX_CONFIG_H
++#include "dix-config.h"
++#endif
++
++#include "xf86.h"
++#include "driver.h"
++#include "dri3.h"
++#ifdef XSYNC
++# include "misync.h"
++# ifdef HAVE_XSHMFENCE
++#  include "misyncshm.h"
++# endif
++# include "misyncstr.h"
++# include <epoxy/gl.h>
++#endif
++
++#if XSYNC
++static DevPrivateKeyRec dri3_sync_fence_key;
++
++struct dri3_sync_fence {
++   SyncFenceSetTriggeredFunc set_triggered;
++};
++
++static inline struct dri3_sync_fence *
++ms_dri3_get_sync_fence(SyncFence *fence)
++{
++   return (struct dri3_sync_fence *)dixLookupPrivate(&fence->devPrivates, &dri3_sync_fence_key);
++}
++
++static void
++ms_dri3_sync_fence_set_triggered(SyncFence *fence)
++{
++   struct dri3_sync_fence *dri3_fence = ms_dri3_get_sync_fence(fence);
++
++   fence->funcs.SetTriggered = dri3_fence->set_triggered;
++   fence->funcs.SetTriggered(fence);
++   dri3_fence->set_triggered = fence->funcs.SetTriggered;
++   fence->funcs.SetTriggered = ms_dri3_sync_fence_set_triggered;
++}
++
++static void
++ms_dri3_sync_create_fence(ScreenPtr screen, SyncFence *fence, Bool triggered)
++{
++   ScrnInfoPtr scrn = xf86ScreenToScrn(screen);
++   modesettingPtr ms = modesettingPTR(scrn);
++   SyncScreenFuncsPtr scrn_funcs = miSyncGetScreenFuncs(screen);
++   struct dri3_sync_fence *dri3_fence = ms_dri3_get_sync_fence(fence);
++
++   scrn_funcs->CreateFence = ms->drmmode.sync_funcs.CreateFence;
++   scrn_funcs->CreateFence(screen, fence, triggered);
++   ms->drmmode.sync_funcs.CreateFence = scrn_funcs->CreateFence;
++   scrn_funcs->CreateFence = ms_dri3_sync_create_fence;
++
++   dri3_fence->set_triggered = fence->funcs.SetTriggered;
++   fence->funcs.SetTriggered = ms_dri3_sync_fence_set_triggered;
++}
++#endif
++
++Bool
++ms_dri3_sync_init(ScreenPtr screen)
++{
++#if XSYNC
++   ScrnInfoPtr scrn = xf86ScreenToScrn(screen);
++   modesettingPtr ms = modesettingPTR(scrn);
++   SyncScreenFuncsPtr scrn_funcs;
++
++   if (!dixPrivateKeyRegistered(&dri3_sync_fence_key)) {
++      if (!dixRegisterPrivateKey(&dri3_sync_fence_key, PRIVATE_SYNC_FENCE,
++                                 sizeof(struct dri3_sync_fence)))
++        return FALSE;
++   }
++
++#ifdef HAVE_XSHMFENCE
++   if (!miSyncShmScreenInit(screen))
++     return FALSE;
++#else
++   if (!miSyncSetup(screen))
++     return FALSE;
++#endif
++
++   scrn_funcs = miSyncGetScreenFuncs(screen);
++   ms->drmmode.sync_funcs.CreateFence = scrn_funcs->CreateFence;
++   scrn_funcs->CreateFence = ms_dri3_sync_create_fence;
++#endif
++
++   return TRUE;
++}
++
++void
++ms_dri3_sync_close(ScreenPtr screen)
++{
++#if XSYNC
++   ScrnInfoPtr scrn = xf86ScreenToScrn(screen);
++   modesettingPtr ms = modesettingPTR(scrn);
++   SyncScreenFuncsPtr scrn_funcs = miSyncGetScreenFuncs(screen);
++
++   if (scrn_funcs)
++     scrn_funcs->CreateFence = ms->drmmode.sync_funcs.CreateFence;
++#endif
++}
+diff --git a/hw/xfree86/drivers/modesetting/driver.c b/hw/xfree86/drivers/modesetting/driver.c
+index 535f49d1d..395e79f89 100644
+--- a/hw/xfree86/drivers/modesetting/driver.c
++++ b/hw/xfree86/drivers/modesetting/driver.c
+@@ -255,7 +255,7 @@ check_outputs(int fd, int *count)
+         *count = res->count_connectors;
+ 
+     ret = res->count_connectors > 0;
+-#if defined(GLAMOR_HAS_GBM_LINEAR)
++#if defined(GLAMOR_HAS_GBM_LINEAR) || defined(MS_DRI3)
+     if (ret == FALSE) {
+         uint64_t value = 0;
+         if (drmGetCap(fd, DRM_CAP_PRIME, &value) == 0 &&
+@@ -961,6 +961,38 @@ try_enable_glamor(ScrnInfoPtr pScrn)
+ #endif
+ }
+ 
++static void
++try_enable_dri3(ScrnInfoPtr pScrn)
++{
++    modesettingPtr ms = modesettingPTR(pScrn);
++    const char *accel_method_str = xf86GetOptValString(ms->drmmode.Options,
++                                                       OPTION_ACCEL_METHOD);
++    Bool do_dri3 = FALSE;
++
++    ms->drmmode.dri3_enabled = FALSE;
++
++    do_dri3 = (!accel_method_str ||
++                      strcmp(accel_method_str, "msdri3") == 0);
++
++    if (!do_dri3) {
++       xf86DrvMsg(pScrn->scrnIndex, X_CONFIG, "DRI3 disabled\n");
++       return;
++    }
++
++#ifdef MS_DRI3
++    ms->drmmode.gbm = gbm_create_device(ms->fd);
++    if (ms->drmmode.gbm) {
++       ms->drmmode.dri3_enabled = TRUE;
++       xf86DrvMsg(pScrn->scrnIndex, X_INFO, "DRI3 initialized\n");
++    } else {
++       xf86DrvMsg(pScrn->scrnIndex, X_ERROR, "DRI3 initialization failed\n");
++    }
++#else
++    if (do_dri3)
++      xf86DrvMsg(pScrn->scrnIndex, X_INFO, "No DRI3 support in the X Server\n");
++#endif
++}
++
+ static Bool
+ msShouldDoubleShadow(ScrnInfoPtr pScrn, modesettingPtr ms)
+ {
+@@ -1170,8 +1202,10 @@ PreInit(ScrnInfoPtr pScrn, int flags)
+     }
+ 
+     try_enable_glamor(pScrn);
++    if (!ms->drmmode.glamor)
++        try_enable_dri3(pScrn);
+ 
+-    if (!ms->drmmode.glamor) {
++    if (!ms->drmmode.glamor && !ms->drmmode.dri3_enabled) {
+         Bool prefer_shadow = TRUE;
+ 
+         if (ms->drmmode.force_24_32) {
+@@ -1218,11 +1252,12 @@ PreInit(ScrnInfoPtr pScrn, int flags)
+     if (ret == 0) {
+         if (connector_count && (value & DRM_PRIME_CAP_IMPORT)) {
+             pScrn->capabilities |= RR_Capability_SinkOutput;
+-            if (ms->drmmode.glamor)
++            if (ms->drmmode.glamor || ms->drmmode.dri3_enabled)
+                 pScrn->capabilities |= RR_Capability_SinkOffload;
+         }
+-#ifdef GLAMOR_HAS_GBM_LINEAR
+-        if (value & DRM_PRIME_CAP_EXPORT && ms->drmmode.glamor)
++#if defined(GLAMOR_HAS_GBM_LINEAR) || defined(MS_DRI3)
++        if (value & DRM_PRIME_CAP_EXPORT &&
++            (ms->drmmode.glamor || ms->drmmode.dri3_enabled))
+             pScrn->capabilities |= RR_Capability_SourceOutput | RR_Capability_SourceOffload;
+ #endif
+     }
+@@ -1244,8 +1279,11 @@ PreInit(ScrnInfoPtr pScrn, int flags)
+ 
+     ms->kms_has_modifiers = FALSE;
+     ret = drmGetCap(ms->fd, DRM_CAP_ADDFB2_MODIFIERS, &value);
+-    if (ret == 0 && value != 0)
++    if (ret == 0 && value != 0) {
++        if (!ms->drmmode.glamor && ms->drmmode.dri3_enabled)
++            ret = drmSetClientCap(ms->fd, DRM_CLIENT_CAP_UNIVERSAL_PLANES, 1);
+         ms->kms_has_modifiers = TRUE;
++    }
+ 
+     if (drmmode_pre_init(pScrn, &ms->drmmode, pScrn->bitsPerPixel / 8) == FALSE) {
+         xf86DrvMsg(pScrn->scrnIndex, X_ERROR, "KMS setup failed\n");
+@@ -1561,7 +1599,7 @@ CreateScreenResources(ScreenPtr pScreen)
+     if (!ms->drmmode.sw_cursor)
+         drmmode_map_cursor_bos(pScrn, &ms->drmmode);
+ 
+-    if (!ms->drmmode.gbm) {
++    if (!ms->drmmode.gbm || ms->drmmode.dri3_enabled) {
+         pixels = drmmode_map_front_bo(&ms->drmmode);
+         if (!pixels)
+             return FALSE;
+@@ -1626,14 +1664,23 @@ CreateScreenResources(ScreenPtr pScreen)
+ static Bool
+ msSharePixmapBacking(PixmapPtr ppix, ScreenPtr secondary, void **handle)
+ {
+-#ifdef GLAMOR_HAS_GBM
++#if defined(GLAMOR_HAS_GBM) || defined(MS_DRI3)
+     modesettingPtr ms =
+         modesettingPTR(xf86ScreenToScrn(ppix->drawable.pScreen));
+-    int ret;
++    int ret = -1;
+     CARD16 stride;
+     CARD32 size;
+-    ret = ms->glamor.shareable_fd_from_pixmap(ppix->drawable.pScreen, ppix,
+-                                              &stride, &size);
++# ifdef MS_DRI3
++    if (ms->drmmode.glamor)
++# endif
++        ret = ms->glamor.shareable_fd_from_pixmap(ppix->drawable.pScreen, ppix,
++                                                  &stride, &size);
++# ifdef MS_DRI3
++    else if (ms->drmmode.dri3_enabled)
++        ret = ms_dri3_shareable_fd_from_pixmap(ppix->drawable.pScreen, ppix,
++                                               &stride, &size);
++# endif
++
+     if (ret == -1)
+         return FALSE;
+ 
+@@ -1646,11 +1693,11 @@ msSharePixmapBacking(PixmapPtr ppix, ScreenPtr secondary, void **handle)
+ static Bool
+ msSetSharedPixmapBacking(PixmapPtr ppix, void *fd_handle)
+ {
+-#ifdef GLAMOR_HAS_GBM
++#if defined(GLAMOR_HAS_GBM) || defined(MS_DRI3)
+     ScreenPtr screen = ppix->drawable.pScreen;
+     ScrnInfoPtr scrn = xf86ScreenToScrn(screen);
+     modesettingPtr ms = modesettingPTR(scrn);
+-    Bool ret;
++    Bool ret = FALSE;
+     int ihandle = (int) (long) fd_handle;
+ 
+     if (ihandle == -1)
+@@ -1658,12 +1705,24 @@ msSetSharedPixmapBacking(PixmapPtr ppix, void *fd_handle)
+            return drmmode_SetSlaveBO(ppix, &ms->drmmode, ihandle, 0, 0);
+ 
+     if (ms->drmmode.reverse_prime_offload_mode) {
+-        ret = ms->glamor.back_pixmap_from_fd(ppix, ihandle,
+-                                             ppix->drawable.width,
+-                                             ppix->drawable.height,
+-                                             ppix->devKind,
+-                                             ppix->drawable.depth,
+-                                             ppix->drawable.bitsPerPixel);
++# ifdef MS_DRI3
++        if (ms->drmmode.glamor)
++# endif
++           ret = ms->glamor.back_pixmap_from_fd(ppix, ihandle,
++                                                ppix->drawable.width,
++                                                ppix->drawable.height,
++                                                ppix->devKind,
++                                                ppix->drawable.depth,
++                                                ppix->drawable.bitsPerPixel);
++# ifdef MS_DRI3
++        else if (ms->drmmode.dri3_enabled)
++            ret = ms_dri3_back_pixmap_from_fd(ppix, ihandle,
++                                              ppix->drawable.width,
++                                              ppix->drawable.height,
++                                              ppix->devKind,
++                                              ppix->drawable.depth,
++                                              ppix->drawable.bitsPerPixel);
++# endif
+     } else {
+         int size = ppix->devKind * ppix->drawable.height;
+         ret = drmmode_SetSlaveBO(ppix, &ms->drmmode, ihandle, ppix->devKind, size);
+@@ -1783,6 +1842,11 @@ ScreenInit(ScreenPtr pScreen, int argc, char **argv)
+         ms->drmmode.gbm = ms->glamor.egl_get_gbm_device(pScreen);
+ #endif
+ 
++#ifdef MS_DRI3
++    if (ms->drmmode.dri3_enabled && !ms->drmmode.gbm)
++        ms->drmmode.gbm = gbm_create_device(ms->fd);
++#endif
++
+     /* HW dependent - FIXME */
+     pScrn->displayWidth = pScrn->virtualX;
+     if (!drmmode_create_initial_bos(pScrn, &ms->drmmode))
+@@ -1807,11 +1871,9 @@ ScreenInit(ScreenPtr pScreen, int argc, char **argv)
+     if (!miSetPixmapDepths())
+         return FALSE;
+ 
+-    if (!dixRegisterScreenSpecificPrivateKey
+-        (pScreen, &ms->drmmode.pixmapPrivateKeyRec, PRIVATE_PIXMAP,
+-         sizeof(msPixmapPrivRec))) {
++    if (!dixRegisterPrivateKey(&ms->drmmode.pixmapPrivateKeyRec,
++                               PRIVATE_PIXMAP, sizeof(msPixmapPrivRec)))
+         return FALSE;
+-    }
+ 
+     pScrn->memPhysBase = 0;
+     pScrn->fbOffset = 0;
+@@ -1885,7 +1947,8 @@ ScreenInit(ScreenPtr pScreen, int argc, char **argv)
+      * later memory should be bound when allocating, e.g rotate_mem */
+     pScrn->vtSema = TRUE;
+ 
+-    if (serverGeneration == 1 && bgNoneRoot && ms->drmmode.glamor) {
++    if (serverGeneration == 1 && bgNoneRoot &&
++        (ms->drmmode.glamor || ms->drmmode.dri3_enabled)) {
+         ms->CreateWindow = pScreen->CreateWindow;
+         pScreen->CreateWindow = CreateWindow_oneshot;
+     }
+@@ -1979,6 +2042,50 @@ ScreenInit(ScreenPtr pScreen, int argc, char **argv)
+         }
+     }
+ #endif
++#ifdef MS_DRI3
++   /* Note: dri3_enabled is set in try_enable_dri3 function first. We reuse
++    * the variable here checking the return of ms_dri3_screen_init so that we
++    * can know if DRI3 is actually setup */
++    if (ms->drmmode.dri3_enabled) {
++        if (!(ms->drmmode.dri3_enabled = ms_dri3_screen_init(pScreen))) {
++           xf86DrvMsg(pScrn->scrnIndex, X_ERROR,
++                      "Failed to initialize the DRI3 extension.\n");
++        }
++        if (!ms_dri3_sync_init(pScreen)) {
++            xf86DrvMsg(pScrn->scrnIndex, X_ERROR,
++                       "Failed to initialize the Sync extension.\n");
++        }
++        /* enable reverse prime if we are a GPU screen, and accelerated, and not
++         * i915, evdi or udl. i915 is happy scanning out from sysmem.
++         * evdi and udl are virtual drivers scanning out from sysmem
++         * backed dumb buffers.
++         */
++        if (pScreen->isGPU) {
++            drmVersionPtr version;
++
++            /* enable if we are an accelerated GPU screen */
++            ms->drmmode.reverse_prime_offload_mode = TRUE;
++
++            /* disable if we detect i915 */
++            if ((version = drmGetVersion(ms->drmmode.fd))) {
++                if (!strncmp("i915", version->name, version->name_len)) {
++                    ms->drmmode.reverse_prime_offload_mode = FALSE;
++                }
++                if (!strncmp("evdi", version->name, version->name_len)) {
++                    ms->drmmode.reverse_prime_offload_mode = FALSE;
++                }
++                if (!strncmp("udl", version->name, version->name_len)) {
++                    ms->drmmode.reverse_prime_offload_mode = FALSE;
++                }
++                if (!ms->drmmode.reverse_prime_offload_mode) {
++                    xf86DrvMsg(pScrn->scrnIndex, X_INFO,
++                       "Disable reverse prime offload mode for %s.\n", version->name);
++                }
++                drmFreeVersion(version);
++            }
++        }
++    }
++#endif
+     if (!(ms->drmmode.present_enable = ms_present_screen_init(pScreen))) {
+         xf86DrvMsg(pScrn->scrnIndex, X_ERROR,
+                    "Failed to initialize the Present extension.\n");
+@@ -2086,6 +2193,11 @@ CloseScreen(ScreenPtr pScreen)
+     /* Clear mask of assigned crtc's in this generation */
+     ms_ent->assigned_crtcs = 0;
+ 
++#ifdef MS_DRI3
++   if (ms->drmmode.dri3_enabled)
++       ms_dri3_sync_close(pScreen);
++#endif
++
+ #ifdef GLAMOR_HAS_GBM
+     if (ms->drmmode.dri2_enable) {
+         ms_dri2_close_screen(pScreen);
+@@ -2124,6 +2236,11 @@ CloseScreen(ScreenPtr pScreen)
+         LeaveVT(pScrn);
+     }
+ 
++#ifdef MS_DRI3
++    if (ms->drmmode.dri3_enabled)
++        pScreen->DestroyPixmap = ms->drmmode.destroy_pixmap;
++#endif
++
+     pScreen->CreateScreenResources = ms->createScreenResources;
+     pScreen->BlockHandler = ms->BlockHandler;
+ 
+diff --git a/hw/xfree86/drivers/modesetting/driver.h b/hw/xfree86/drivers/modesetting/driver.h
+index 71aa8730e..68f9698a8 100644
+--- a/hw/xfree86/drivers/modesetting/driver.h
++++ b/hw/xfree86/drivers/modesetting/driver.h
+@@ -39,6 +39,9 @@
+ #ifdef GLAMOR_HAS_GBM
+ #define GLAMOR_FOR_XORG 1
+ #include "glamor.h"
++#endif
++
++#if defined(GLAMOR_HAS_GBM) || defined(MS_DRI3)
+ #include <gbm.h>
+ #endif
+ 
+@@ -220,7 +223,21 @@ void ms_vblank_close_screen(ScreenPtr screen);
+ 
+ Bool ms_present_screen_init(ScreenPtr screen);
+ 
+-#ifdef GLAMOR_HAS_GBM
++#ifdef MS_DRI3
++Bool ms_dri3_screen_init(ScreenPtr screen);
++Bool ms_dri3_create_back_pixmap(PixmapPtr pixmap, int handle, int stride);
++Bool ms_dri3_pixmap_from_gbm_bo(PixmapPtr pixmap, struct gbm_bo *bo);
++int ms_dri3_shareable_fd_from_pixmap(ScreenPtr screen, PixmapPtr pixmap, CARD16 *stride, CARD32 *size);
++Bool ms_dri3_sync_init(ScreenPtr screen);
++void ms_dri3_sync_close(ScreenPtr screen);
++struct gbm_bo *ms_dri3_gbm_bo_from_pixmap(ScreenPtr screen, PixmapPtr pixmap);
++Bool ms_dri3_destroy_pixmap(PixmapPtr pixmap);
++void ms_dri3_set_drawable_modifiers_func(ScreenPtr screen, GetDrawableModifiersFuncPtr func);
++Bool ms_dri3_back_pixmap_from_fd(PixmapPtr pixmap, int fd, CARD16 width, CARD16 height, CARD16 stride, CARD8 depth, CARD8 bpp);
++int ms_dri3_pixmap_name_get(PixmapPtr pixmap, CARD16 *stride, CARD32 *size);
++void ms_dri3_buffers_exchange(PixmapPtr front, PixmapPtr back);
++#endif
++#if defined(GLAMOR_HAS_GBM) || defined(MS_DRI3)
+ 
+ typedef void (*ms_pageflip_handler_proc)(modesettingPtr ms,
+                                          uint64_t frame,
+diff --git a/hw/xfree86/drivers/modesetting/drmmode_display.c b/hw/xfree86/drivers/modesetting/drmmode_display.c
+index bf52c04f4..1c992ddeb 100644
+--- a/hw/xfree86/drivers/modesetting/drmmode_display.c
++++ b/hw/xfree86/drivers/modesetting/drmmode_display.c
+@@ -959,8 +959,8 @@ drmmode_bo_destroy(drmmode_ptr drmmode, drmmode_bo *bo)
+ {
+     int ret;
+ 
+-#ifdef GLAMOR_HAS_GBM
+-    if (bo->gbm) {
++#if defined(GLAMOR_HAS_GBM) || defined(MS_DRI3)
++    if (bo->gbm && drmmode->glamor) {
+         gbm_bo_destroy(bo->gbm);
+         bo->gbm = NULL;
+     }
+@@ -978,7 +978,7 @@ drmmode_bo_destroy(drmmode_ptr drmmode, drmmode_bo *bo)
+ uint32_t
+ drmmode_bo_get_pitch(drmmode_bo *bo)
+ {
+-#ifdef GLAMOR_HAS_GBM
++#if defined(GLAMOR_HAS_GBM) || defined(MS_DRI3)
+     if (bo->gbm)
+         return gbm_bo_get_stride(bo->gbm);
+ #endif
+@@ -989,7 +989,7 @@ drmmode_bo_get_pitch(drmmode_bo *bo)
+ static Bool
+ drmmode_bo_has_bo(drmmode_bo *bo)
+ {
+-#ifdef GLAMOR_HAS_GBM
++#if defined(GLAMOR_HAS_GBM) || defined(MS_DRI3)
+     if (bo->gbm)
+         return TRUE;
+ #endif
+@@ -1000,7 +1000,7 @@ drmmode_bo_has_bo(drmmode_bo *bo)
+ uint32_t
+ drmmode_bo_get_handle(drmmode_bo *bo)
+ {
+-#ifdef GLAMOR_HAS_GBM
++#if defined(GLAMOR_HAS_GBM) || defined(MS_DRI3)
+     if (bo->gbm)
+         return gbm_bo_get_handle(bo->gbm).u32;
+ #endif
+@@ -1013,7 +1013,7 @@ drmmode_bo_map(drmmode_ptr drmmode, drmmode_bo *bo)
+ {
+     int ret;
+ 
+-#ifdef GLAMOR_HAS_GBM
++#if defined(GLAMOR_HAS_GBM) || defined(MS_DRI3)
+     if (bo->gbm)
+         return NULL;
+ #endif
+@@ -1076,13 +1076,15 @@ drmmode_bo_import(drmmode_ptr drmmode, drmmode_bo *bo,
+ 
+ static Bool
+ drmmode_create_bo(drmmode_ptr drmmode, drmmode_bo *bo,
+-                  unsigned width, unsigned height, unsigned bpp)
++                  unsigned width, unsigned height, unsigned bpp, Bool use_dumb)
+ {
+     bo->width = width;
+     bo->height = height;
+ 
++    if (use_dumb) goto create_dumb;
++
+ #ifdef GLAMOR_HAS_GBM
+-    if (drmmode->glamor) {
++    if (drmmode->glamor || drmmode->dri3_enabled) {
+ #ifdef GBM_BO_WITH_MODIFIERS
+         uint32_t num_modifiers;
+         uint64_t *modifiers = NULL;
+@@ -1133,6 +1135,7 @@ drmmode_create_bo(drmmode_ptr drmmode, drmmode_bo *bo,
+     }
+ #endif
+ 
++create_dumb:
+     bo->dumb = dumb_bo_create(drmmode->fd, width, height, bpp);
+     return bo->dumb != NULL;
+ }
+@@ -1461,7 +1464,7 @@ drmmode_crtc_dpms(xf86CrtcPtr crtc, int mode)
+     }
+ }
+ 
+-#ifdef GLAMOR_HAS_GBM
++#if defined(GLAMOR_HAS_GBM) || defined(MS_DRI3)
+ static PixmapPtr
+ create_pixmap_for_fbcon(drmmode_ptr drmmode, ScrnInfoPtr pScrn, int fbcon_id)
+ {
+@@ -1469,7 +1472,7 @@ create_pixmap_for_fbcon(drmmode_ptr drmmode, ScrnInfoPtr pScrn, int fbcon_id)
+     drmModeFBPtr fbcon;
+     ScreenPtr pScreen = xf86ScrnToScreen(pScrn);
+     modesettingPtr ms = modesettingPTR(pScrn);
+-    Bool ret;
++    Bool ret = FALSE;
+ 
+     if (pixmap)
+         return pixmap;
+@@ -1489,8 +1492,15 @@ create_pixmap_for_fbcon(drmmode_ptr drmmode, ScrnInfoPtr pScrn, int fbcon_id)
+     if (!pixmap)
+         goto out_free_fb;
+ 
+-    ret = ms->glamor.egl_create_textured_pixmap(pixmap, fbcon->handle,
+-                                                fbcon->pitch);
++#ifdef MS_DRI3
++    if (drmmode->glamor)
++#endif
++      ret = ms->glamor.egl_create_textured_pixmap(pixmap, fbcon->handle,
++                                                  fbcon->pitch);
++#ifdef MS_DRI3
++    else if (drmmode->dri3_enabled)
++      ret = ms_dri3_create_back_pixmap(pixmap, fbcon->handle, fbcon->pitch);
++#endif
+     if (!ret) {
+       FreePixmap(pixmap);
+       pixmap = NULL;
+@@ -1506,7 +1516,7 @@ out_free_fb:
+ void
+ drmmode_copy_fb(ScrnInfoPtr pScrn, drmmode_ptr drmmode)
+ {
+-#ifdef GLAMOR_HAS_GBM
++#if defined(GLAMOR_HAS_GBM) || defined(MS_DRI3)
+     xf86CrtcConfigPtr xf86_config = XF86_CRTC_CONFIG_PTR(pScrn);
+     ScreenPtr pScreen = xf86ScrnToScreen(pScrn);
+     PixmapPtr src, dst;
+@@ -1944,7 +1954,7 @@ drmmode_shadow_allocate(xf86CrtcPtr crtc, int width, int height)
+     int ret;
+ 
+     if (!drmmode_create_bo(drmmode, &drmmode_crtc->rotate_bo,
+-                           width, height, drmmode->kbpp)) {
++                           width, height, drmmode->kbpp, drmmode->dri3_enabled)) {
+         xf86DrvMsg(crtc->scrn->scrnIndex, X_ERROR,
+                "Couldn't allocate shadow memory for rotated CRTC\n");
+         return NULL;
+@@ -1959,8 +1969,8 @@ drmmode_shadow_allocate(xf86CrtcPtr crtc, int width, int height)
+         return NULL;
+     }
+ 
+-#ifdef GLAMOR_HAS_GBM
+-    if (drmmode->gbm)
++#if defined(GLAMOR_HAS_GBM) || defined(MS_DRI3)
++    if (drmmode->gbm && !drmmode->dri3_enabled)
+         return drmmode_crtc->rotate_bo.gbm;
+ #endif
+     return drmmode_crtc->rotate_bo.dumb;
+@@ -3395,18 +3405,29 @@ drmmode_clones_init(ScrnInfoPtr scrn, drmmode_ptr drmmode, drmModeResPtr mode_re
+ static Bool
+ drmmode_set_pixmap_bo(drmmode_ptr drmmode, PixmapPtr pixmap, drmmode_bo *bo)
+ {
+-#ifdef GLAMOR_HAS_GBM
++#if defined(GLAMOR_HAS_GBM) || defined(MS_DRI3)
+     ScrnInfoPtr scrn = drmmode->scrn;
+     modesettingPtr ms = modesettingPTR(scrn);
+ 
+-    if (!drmmode->glamor)
++    if (!drmmode->glamor && !drmmode->dri3_enabled)
+         return TRUE;
+ 
+-    if (!ms->glamor.egl_create_textured_pixmap_from_gbm_bo(pixmap, bo->gbm,
+-                                                           bo->used_modifiers)) {
+-        xf86DrvMsg(scrn->scrnIndex, X_ERROR, "Failed to create pixmap\n");
+-        return FALSE;
++# ifdef MS_DRI3
++    if (drmmode->glamor) {
++# endif
++        if (!ms->glamor.egl_create_textured_pixmap_from_gbm_bo(pixmap, bo->gbm,
++                                                               bo->used_modifiers)) {
++            xf86DrvMsg(scrn->scrnIndex, X_ERROR, "Failed to create pixmap\n");
++            return FALSE;
++        }
++# ifdef MS_DRI3
++    } else if (drmmode->dri3_enabled && bo->gbm) {
++        if (!ms_dri3_pixmap_from_gbm_bo(pixmap, bo->gbm)) {
++            xf86DrvMsg(scrn->scrnIndex, X_ERROR, "Failed to create pixmap\n");
++            return FALSE;
++        }
+     }
++# endif
+ #endif
+ 
+     return TRUE;
+@@ -3453,7 +3474,7 @@ drmmode_xf86crtc_resize(ScrnInfoPtr scrn, int width, int height)
+     drmmode->fb_id = 0;
+ 
+     if (!drmmode_create_bo(drmmode, &drmmode->front_bo,
+-                           width, height, drmmode->kbpp))
++                           width, height, drmmode->kbpp, drmmode->dri3_enabled))
+         goto fail;
+ 
+     pitch = drmmode_bo_get_pitch(&drmmode->front_bo);
+@@ -3462,7 +3483,7 @@ drmmode_xf86crtc_resize(ScrnInfoPtr scrn, int width, int height)
+     scrn->virtualY = height;
+     scrn->displayWidth = pitch / kcpp;
+ 
+-    if (!drmmode->gbm) {
++    if (!drmmode->gbm || drmmode->dri3_enabled) {
+         new_pixels = drmmode_map_front_bo(drmmode);
+         if (!new_pixels)
+             goto fail;
+@@ -3724,7 +3745,7 @@ drmmode_pre_init(ScrnInfoPtr pScrn, drmmode_ptr drmmode, int cpp)
+ Bool
+ drmmode_init(ScrnInfoPtr pScrn, drmmode_ptr drmmode)
+ {
+-#ifdef GLAMOR_HAS_GBM
++#if defined(GLAMOR_HAS_GBM) || defined(MS_DRI3)
+     ScreenPtr pScreen = xf86ScrnToScreen(pScrn);
+     modesettingPtr ms = modesettingPTR(pScrn);
+ 
+@@ -3736,6 +3757,10 @@ drmmode_init(ScrnInfoPtr pScrn, drmmode_ptr drmmode)
+         ms->glamor.set_drawable_modifiers_func(pScreen, get_drawable_modifiers);
+ #endif
+     }
++# ifdef MS_DRI3
++    else if (drmmode->dri3_enabled)
++        ms_dri3_set_drawable_modifiers_func(pScreen, get_drawable_modifiers);
++# endif
+ #endif
+ 
+     return TRUE;
+@@ -4175,7 +4200,8 @@ drmmode_create_initial_bos(ScrnInfoPtr pScrn, drmmode_ptr drmmode)
+     width = pScrn->virtualX;
+     height = pScrn->virtualY;
+ 
+-    if (!drmmode_create_bo(drmmode, &drmmode->front_bo, width, height, bpp))
++    if (!drmmode_create_bo(drmmode, &drmmode->front_bo, width, height,
++                           bpp, drmmode->dri3_enabled))
+         return FALSE;
+     pScrn->displayWidth = drmmode_bo_get_pitch(&drmmode->front_bo) / cpp;
+ 
+diff --git a/hw/xfree86/drivers/modesetting/drmmode_display.h b/hw/xfree86/drivers/modesetting/drmmode_display.h
+index 29f9b8f7d..c4acf9165 100644
+--- a/hw/xfree86/drivers/modesetting/drmmode_display.h
++++ b/hw/xfree86/drivers/modesetting/drmmode_display.h
+@@ -36,6 +36,16 @@
+ 
+ #include "dumb_bo.h"
+ 
++#ifdef MS_DRI3
++typedef Bool (*GetDrawableModifiersFuncPtr) (DrawablePtr draw, uint32_t format, uint32_t *num_modifiers, uint64_t **modifiers);
++# ifdef XSYNC
++#  include "misync.h"
++#  ifdef HAVE_XSHMFENCE
++#   include "misyncshm.h"
++#  endif
++# endif
++#endif
++
+ struct gbm_device;
+ 
+ enum drmmode_plane_property {
+@@ -79,7 +89,7 @@ typedef struct {
+     uint32_t width;
+     uint32_t height;
+     struct dumb_bo *dumb;
+-#ifdef GLAMOR_HAS_GBM
++#if defined(GLAMOR_HAS_GBM) || defined(MS_DRI3)
+     Bool used_modifiers;
+     struct gbm_bo *gbm;
+ #endif
+@@ -136,6 +146,17 @@ typedef struct {
+     Bool dri2_enable;
+     Bool present_enable;
+ 
++    /* bool flag to indicate if modesetting driver has enabled DRI3 support.
++     * Note: This only makes sense if glamor is disabled */
++    Bool dri3_enabled;
++#ifdef MS_DRI3
++    DestroyPixmapProcPtr destroy_pixmap;
++    GetDrawableModifiersFuncPtr get_drawable_modifiers;
++# ifdef XSYNC
++    SyncScreenFuncsRec sync_funcs;
++# endif
++#endif
++
+     uint32_t vrr_prop_id;
+     Bool use_ctm;
+ } drmmode_rec, *drmmode_ptr;
+@@ -255,6 +276,12 @@ typedef struct _msPixmapPriv {
+     PixmapDirtyUpdatePtr dirty; /* cached dirty ent to avoid searching list */
+     DrawablePtr secondary_src; /* if we exported shared pixmap, dirty tracking src */
+     Bool notify_on_damage; /* if sink has requested damage notification */
++
++#ifdef MS_DRI3
++    struct gbm_bo *bo;
++    void *bo_map;
++    Bool use_modifiers;
++#endif
+ } msPixmapPrivRec, *msPixmapPrivPtr;
+ 
+ #define msGetPixmapPriv(drmmode, p) ((msPixmapPrivPtr)dixGetPrivateAddr(&(p)->devPrivates, &(drmmode)->pixmapPrivateKeyRec))
+diff --git a/hw/xfree86/drivers/modesetting/meson.build b/hw/xfree86/drivers/modesetting/meson.build
+index 02852a716..32e7edc93 100644
+--- a/hw/xfree86/drivers/modesetting/meson.build
++++ b/hw/xfree86/drivers/modesetting/meson.build
+@@ -1,4 +1,6 @@
+ modesetting_srcs = [
++    'dri3_sync.c',
++    'dri3.c',
+     'dri2.c',
+     'driver.c',
+     'drmmode_display.c',
+@@ -20,6 +22,7 @@ shared_module(
+         udev_dep,
+         libdrm_dep,
+         gbm_dep,
++        epoxy_dep,
+     ],
+ 
+     install: true,
+diff --git a/hw/xfree86/drivers/modesetting/modesetting.man b/hw/xfree86/drivers/modesetting/modesetting.man
+index 71790011e..7b847f42c 100644
+--- a/hw/xfree86/drivers/modesetting/modesetting.man
++++ b/hw/xfree86/drivers/modesetting/modesetting.man
+@@ -17,7 +17,7 @@ modesetting \- video driver for framebuffer device
+ is an @xservername@ driver for KMS devices.  This driver supports
+ TrueColor visuals at framebuffer depths of 15, 16, 24, and 30. RandR
+ 1.2 is supported for multi-head configurations. Acceleration is available
+-through glamor for devices supporting at least OpenGL ES 2.0 or OpenGL 2.1.
++through glamor or DRI3 for devices supporting at least OpenGL ES 2.0 or OpenGL 2.1.
+ If glamor is not enabled, a shadow framebuffer is configured based on the
+ KMS drivers' preference (unless the framebuffer is 24 bits per pixel, in
+ which case the shadow framebuffer is always used).
+@@ -65,7 +65,7 @@ This defaults to enabled for ASPEED and Matrox G200 devices, and disabled
+ otherwise.
+ .TP
+ .BI "Option \*qAccelMethod\*q \*q" string \*q
+-One of \*qglamor\*q or \*qnone\*q.  Default: glamor.
++One of \*qglamor\*q or \*qmsdri3\*q or \*qnone\*q.  Default: glamor.
+ .TP
+ .BI "Option \*qPageFlip\*q \*q" boolean \*q
+ Enable DRI3 page flipping.  The default is
+@@ -114,3 +114,4 @@ kms drivers which are known to be safe for use of GAMMA_LUT.
+ X(@miscmansuffix@)
+ .SH AUTHORS
+ Authors include: Dave Airlie
++
+diff --git a/hw/xfree86/drivers/modesetting/pageflip.c b/hw/xfree86/drivers/modesetting/pageflip.c
+index 23ee95f9a..c5e961cb6 100644
+--- a/hw/xfree86/drivers/modesetting/pageflip.c
++++ b/hw/xfree86/drivers/modesetting/pageflip.c
+@@ -63,7 +63,7 @@ ms_flush_drm_events(ScreenPtr screen)
+     return 1;
+ }
+ 
+-#ifdef GLAMOR_HAS_GBM
++#if defined(GLAMOR_HAS_GBM) || defined(MS_DRI3)
+ 
+ /*
+  * Event data for an in progress flip.
+@@ -305,7 +305,7 @@ ms_do_pageflip(ScreenPtr screen,
+                ms_pageflip_abort_proc pageflip_abort,
+                const char *log_prefix)
+ {
+-#ifndef GLAMOR_HAS_GBM
++# if !defined(GLAMOR_HAS_GBM) && !defined(MS_DRI3)
+     return FALSE;
+ #else
+     ScrnInfoPtr scrn = xf86ScreenToScrn(screen);
+@@ -315,9 +315,16 @@ ms_do_pageflip(ScreenPtr screen,
+     uint32_t flags;
+     int i;
+     struct ms_flipdata *flipdata;
+-    ms->glamor.block_handler(screen);
+ 
+-    new_front_bo.gbm = ms->glamor.gbm_bo_from_pixmap(screen, new_front);
++    if (ms->drmmode.glamor) {
++      ms->glamor.block_handler(screen);
++      new_front_bo.gbm = ms->glamor.gbm_bo_from_pixmap(screen, new_front);
++    }
++# ifdef MS_DRI3
++    else if (ms->drmmode.dri3_enabled)
++      new_front_bo.gbm = ms_dri3_gbm_bo_from_pixmap(screen, new_front);
++# endif
++
+     new_front_bo.dumb = NULL;
+ 
+     if (!new_front_bo.gbm) {
+diff --git a/hw/xfree86/drivers/modesetting/present.c b/hw/xfree86/drivers/modesetting/present.c
+index c3266d871..bf765c11f 100644
+--- a/hw/xfree86/drivers/modesetting/present.c
++++ b/hw/xfree86/drivers/modesetting/present.c
+@@ -185,7 +185,7 @@ ms_present_flush(WindowPtr window)
+ #endif
+ }
+ 
+-#ifdef GLAMOR_HAS_GBM
++#if defined(GLAMOR_HAS_GBM) || defined(MS_DRI3)
+ 
+ /**
+  * Callback for the DRM event queue when a flip has completed on all pipes
+@@ -241,7 +241,7 @@ ms_present_check_unflip(RRCrtcPtr crtc,
+     xf86CrtcConfigPtr config = XF86_CRTC_CONFIG_PTR(scrn);
+     int num_crtcs_on = 0;
+     int i;
+-    struct gbm_bo *gbm;
++    struct gbm_bo *gbm = NULL;
+ 
+     if (!ms->drmmode.pageflip)
+         return FALSE;
+@@ -275,19 +275,28 @@ ms_present_check_unflip(RRCrtcPtr crtc,
+         pixmap->devKind != drmmode_bo_get_pitch(&ms->drmmode.front_bo))
+         return FALSE;
+ 
+-    if (!ms->drmmode.glamor)
++    if (!ms->drmmode.glamor && !ms->drmmode.dri3_enabled)
+         return FALSE;
+ 
+-#ifdef GBM_BO_WITH_MODIFIERS
++# ifdef GBM_BO_WITH_MODIFIERS
+     /* Check if buffer format/modifier is supported by all active CRTCs */
+-    gbm = ms->glamor.gbm_bo_from_pixmap(screen, pixmap);
++#  ifdef MS_DRI3
++    if (ms->drmmode.glamor)
++#  endif
++        gbm = ms->glamor.gbm_bo_from_pixmap(screen, pixmap);
++#  ifdef MS_DRI3
++    else if (ms->drmmode.dri3_enabled)
++        gbm = ms_dri3_gbm_bo_from_pixmap(screen, pixmap);
++#  endif
++
+     if (gbm) {
+         uint32_t format;
+         uint64_t modifier;
+ 
+         format = gbm_bo_get_format(gbm);
+         modifier = gbm_bo_get_modifier(gbm);
+-        gbm_bo_destroy(gbm);
++        if (ms->drmmode.glamor)
++            gbm_bo_destroy(gbm);
+ 
+         if (!drmmode_is_format_supported(scrn, format, modifier)) {
+             if (reason)
+@@ -295,7 +304,7 @@ ms_present_check_unflip(RRCrtcPtr crtc,
+             return FALSE;
+         }
+     }
+-#endif
++# endif
+ 
+     /* Make sure there's a bo we can get to */
+     /* XXX: actually do this.  also...is it sufficient?
+@@ -447,7 +456,7 @@ static present_screen_info_rec ms_present_screen_info = {
+     .flush = ms_present_flush,
+ 
+     .capabilities = PresentCapabilityNone,
+-#ifdef GLAMOR_HAS_GBM
++#if defined(GLAMOR_HAS_GBM) || defined(MS_DRI3)
+     .check_flip = NULL,
+     .check_flip2 = ms_present_check_flip,
+     .flip = ms_present_flip,
+diff --git a/include/dix-config.h.in b/include/dix-config.h.in
+index fafb669b8..976612c92 100644
+--- a/include/dix-config.h.in
++++ b/include/dix-config.h.in
+@@ -464,6 +464,9 @@
+ /* Ask fontsproto to make font path element names const */
+ #define FONT_PATH_ELEMENT_NAME_CONST    1
+ 
++/* Build Modesetting DRI3 support */
++#undef MS_DRI3
++
+ /* Build GLAMOR */
+ #undef GLAMOR
+ 
+diff --git a/include/meson.build b/include/meson.build
+index 591bc25e0..d1a29c6db 100644
+--- a/include/meson.build
++++ b/include/meson.build
+@@ -114,6 +114,9 @@ conf_data.set('GLAMOR_HAS_GBM_LINEAR',
+ conf_data.set('GBM_BO_WITH_MODIFIERS',
+               build_glamor and gbm_dep.found() and gbm_dep.version().version_compare('>= 17.1') ? '1' : false)
+ 
++conf_data.set('MS_DRI3',
++              build_ms_dri3 and gbm_dep.found() and gbm_dep.version().version_compare('>= 17.1'))
++
+ conf_data.set_quoted('SERVER_MISC_CONFIG_PATH', serverconfigdir)
+ conf_data.set_quoted('PROJECTROOT', get_option('prefix'))
+ conf_data.set_quoted('SYSCONFDIR', join_paths(get_option('prefix'), get_option('sysconfdir')))
+diff --git a/meson.build b/meson.build
+index bc51d10b7..bbddb3184 100644
+--- a/meson.build
++++ b/meson.build
+@@ -439,7 +439,21 @@ if not libdrm_dep.found() and libdrm_required
+     error('DRI requested, but LIBDRM not found')
+ endif
+ 
++build_ms_dri3 = false
+ build_modesetting = libdrm_dep.found() and dri2proto_dep.found()
++if build_modesetting
++    if build_dri3
++       gbm_dep = dependency('gbm', version: '>= 17.1', required: true)
++       epoxy_dep = dependency('epoxy', required: true)
++       if not gbm_dep.found()
++           error('DRI3 requested, but gbm not found')
++       endif
++       if not epoxy_dep.found()
++           error('DRI3 requested, but epoxy not found')
++       endif
++       build_ms_dri3 = gbm_dep.found() and epoxy_dep.found()
++    endif
++endif
+ 
+ build_vgahw = false
+ if get_option('vgahw') == 'auto'
+-- 
+2.39.2

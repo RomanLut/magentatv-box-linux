@@ -1,0 +1,23 @@
+# /etc/systemd/system/mrg5-desktop.service - start the Xfce desktop on the TV at
+# boot with the same script as the manual start (start-desktop, checks/41
+# "Desktop"). X runs on vt1; the script stops getty@tty1 for the session and the
+# console login comes back when the session ends.
+#
+#   systemctl disable mrg5-desktop    # boot to the text console again
+[Unit]
+Description=Xfce desktop on the TV (start-desktop)
+# the console getty is up before the script stops it (no start/stop race), and
+# the V3D overflow settings are in place before X opens the GPU
+After=systemd-user-sessions.service getty@tty1.service mrg5-v3d-overflow.service dbus.service
+
+[Service]
+Type=oneshot
+# the X session keeps running in this unit after the script returns
+RemainAfterExit=yes
+ExecStart=/usr/local/bin/start-desktop
+Environment=HOME=/root USER=root LOGNAME=root SHELL=/bin/bash
+EnvironmentFile=-/etc/default/locale
+TimeoutStartSec=120
+
+[Install]
+WantedBy=graphical.target

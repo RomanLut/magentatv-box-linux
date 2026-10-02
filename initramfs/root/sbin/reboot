@@ -1,0 +1,14 @@
+#!/bin/sh
+# The bootloader forces -nopsci, so the kernel restart handler can halt
+# without resetting the SoC. Use the BusyBox watchdog feeder, then terminate
+# it deliberately; the kernel driver is built with nowayout, so closing the
+# descriptor leaves the hardware timer running and forces a reset.
+if [ -c /dev/watchdog ]; then
+    /bin/busybox watchdog -F -t 1 -T 5 /dev/watchdog &
+    wd_pid=$!
+    sleep 2
+    kill -9 "$wd_pid" 2>/dev/null || true
+    wait "$wd_pid" 2>/dev/null || true
+    exit 0
+fi
+exec /bin/busybox reboot "$@"

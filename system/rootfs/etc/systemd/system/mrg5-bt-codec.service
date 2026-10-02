@@ -1,0 +1,14 @@
+# /etc/systemd/system/mrg5-bt-codec.service (checks/34, "Bluetooth audio"): Bluetooth
+# headphones and speakers play with plain SBC (mrg5-bt-codec).
+[Unit]
+Description=Bluetooth audio with plain SBC (mrg5-bt-codec)
+After=pulseaudio.service
+Wants=pulseaudio.service
+
+[Service]
+ExecStart=/usr/local/bin/mrg5-bt-codec
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

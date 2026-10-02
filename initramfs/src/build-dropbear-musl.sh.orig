@@ -1,0 +1,37 @@
+#!/bin/sh
+# Build dropbear with musl libc instead of glibc.
+#
+# WHY MUSL. The glibc build (dropbear-multiuser/dropbear, built earlier)
+# links fine and fixes the multiuser check, but glibc's getpwnam/getspnam for
+# the "files" NSS method work via dlopen() of libnss_files.so at RUNTIME,
+# version-matched to the glibc that built the binary. Our cross-toolchain's
+# glibc (Ubuntu 24.04, ~2.39) does not match the stock rootfs's glibc 2.24
+# (ld-2.24.so, libc-2.24.so already in the image) - dlopen-ing a 2.24 NSS
+# plugin from a 2.39-linked binary is exactly the kind of thing that fails
+# silently or crashes. musl parses /etc/passwd and /etc/shadow directly, with
+# no NSS/dlopen indirection at all, so this problem cannot occur.
+set -e
+export PATH=/mnt/d/Github/MagentaTVBox/work/arm-linux-musleabihf/bin:$PATH
+
+BUILD=/root/dropbear-build-musl
+mkdir -p "$BUILD"
+cd "$BUILD"
+rm -rf dropbear-2025.88
+tar xjf /root/dropbear-build/dropbear-2025.88.tar.bz2
+cd dropbear-2025.88
+
+echo '#define DROPBEAR_SVR_PASSWORD_AUTH 0' > localoptions.h
+
+CC=arm-linux-musleabihf-gcc ./configure \
+    --host=arm-linux-musleabihf \
+    --disable-zlib \
+    --enable-bundled-libtom \
+    --enable-static \
+    > "$BUILD/configure.log" 2>&1
+echo "CONFIGURE_EXIT=$?"
+
+make STATIC=1 PROGRAMS='dropbear dropbearkey' -j4 > "$BUILD/build.log" 2>&1
+echo "BUILD_EXIT=$?"
+
+ls -l dropbear dropbearkey
+file dropbear dropbearkey

@@ -1,0 +1,98 @@
+# What make-release.sh leaves out of the copy of the running system (checks/54).
+# GNU tar patterns, anchored at the root as "./path"; "*" also matches "/".
+# Lines starting with "#" and empty lines are ignored. Other mounted filesystems are never
+# copied, only their mount points. make-release.sh removes further items in the copy
+# (packages, accounts, keys) that a pattern cannot express.
+
+# In RAM on the installed system anyway (fstab written by make-release.sh)
+./tmp/*
+./var/tmp/*
+./var/log/*
+
+# Caches and download leftovers, rebuilt when needed
+./root/.cache
+./home/*/.cache
+./var/cache/apt/archives/*.deb
+./var/cache/apt/*.bin
+./var/lib/apt/lists/*_dists_*
+./var/lib/systemd/coredump/*
+./lost+found/*
+./*/SingletonLock
+./*/SingletonSocket
+./*/SingletonCookie
+
+# Personal data: media, games, documents, browser and media-centre profiles, histories,
+# game worlds, the Bluetooth pairings, SSH access. /DATA gets an empty folder tree instead.
+./DATA/*
+./roms/*
+./home/browser/.config/*
+./home/browser/.local/*
+./home/browser/Downloads/*
+./root/.kodi
+./root/.minetest
+./root/.ssh
+./root/.bash_history
+./home/*/.bash_history
+./root/.lesshst
+./root/.python_history
+./root/.wget-hsts
+./root/.local/share/recently-used.xbel
+./var/lib/bluetooth/*
+# PulseAudio's saved volumes: keyed by the build system's machine-id, and they name every
+# Bluetooth audio device used on it (bluez_sink.<address>)
+./var/lib/pulse/*
+./var/lib/samba/private/*.tdb
+# the media server's index of the build system's /DATA (file names), librespot's cache of the
+# Spotify account that last connected and its audio cache, and mpv's watch_later (the URLs and
+# positions of what was cast with Macast's --save-position-on-quit); checks/41, "DLNA and Spotify"
+./var/cache/minidlna/*
+./var/cache/raspotify/*
+./var/lib/raspotify/*
+./root/.config/mpv/watch_later
+./root/.config/Macast
+
+# Docker's and CasaOS's data: images, containers, app data (USB Boot starts with none; EMMC Only
+# purges Docker and leaves out CasaOS, release-exclude-nocasaos.txt)
+./var/lib/docker
+./var/lib/containerd
+./var/log/casaos
+./DATA/AppData
+
+# Development and investigation leftovers in /root and /usr/local/src (sources, build trees,
+# test suites, logs, backups of the box's own NOR and eMMC)
+./usr/local/src/*
+./root/src
+./root/deqp
+./root/mesa-v3d
+./root/logs-*
+./root/fftest*
+./root/rpi-chromium
+./root/xfce-debs
+./root/xorg-msdri3
+./root/n64trace
+./root/usbboot-*
+./root/bootfiles-*
+./root/codecbench
+./root/zImage*
+./root/gdp
+./root/chromium-test
+./root/fstest-profile
+./root/ra-autoconfig
+./root/luanti
+./root/usb-image
+./root/emmc-release
+./root/emmc-backup
+./root/nor-backup-*
+./root/*.log
+./root/*.bak*
+./root/*.bin
+./root/*.img
+./root/*.txt
+./root/*.out
+./root/*.raw
+./root/make-usb-stick-*.log
+
+# The release builds' own output (staging copies, images): a copy would contain itself
+./srv/mrg5-release*
+./srv/mrg5-images
+./srv/mrg5-uninstall

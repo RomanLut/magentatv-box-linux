@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64">
+  <!-- SPDX-License-Identifier: GPL-3.0-or-later; Copyright (C) 2026 Roman Lut -->
+  <!-- side arrow (pointing right; the left one is rotated) -->
+  <path d="M24 12 L44 32 L24 52" fill="none" stroke="#ffffff" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

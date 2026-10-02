@@ -1,0 +1,357 @@
+#!/usr/bin/env python3
+"""Where /DATA lives: on the system (USB) disk or on the internal HDD (checks/41, "Data storage").
+
+    mrg5-storage status              JSON: root, storage, hdd state, free space
+    mrg5-storage use-hdd [--format]  /DATA from the HDD (formats it first with --format)
+    mrg5-storage use-usb             /DATA from the system disk again
+    mrg5-storage boot                at boot (mrg5-storage.service): first-boot check, then
+                                     apply /etc/mrg5-storage.conf; an HDD without the system
+                                     gets a 20-minute spin-down timer
+
+/DATA keeps its path whatever holds it, so Samba ([DATA], smb.casa.conf), CasaOS and its
+containers (/DATA/AppData/...), Kodi and the games need no change. On the HDD, the partition
+labelled MRG5DATA (made by --format) or MRG5ROOT (the HDD system's root) is mounted at
+/mnt/mrg5-hdd, and its DATA folder is bind-mounted onto /DATA; the system disk's own /DATA stays
+underneath, untouched. A switch stops the services that use /DATA (CasaOS, Docker, Samba) and
+starts those that were running again.
+
+This applies to a system booted from USB. On the HDD system (root on the HDD) /DATA is
+always on the HDD and nothing can be switched. The eMMC releases (edition= in
+/etc/mrg5-release, checks/54) keep /DATA fixed too: "emmc" on the eMMC, without ever touching
+an HDD, and "emmc-hdd" on the HDD. status reports "switchable" for the launcher.
+
+First boot of a USB system (flag /var/lib/mrg5-storage/first-check-done missing): if an HDD
+with a DATA folder is attached, /DATA moves to it silently. The flag is then set, so this
+check never runs again (make-usb-stick.sh removes it and the setting from a new stick).
+
+--format makes a new GPT with one partition from sector 2048 (the drive has 4K physical
+sectors) and ext4 labelled MRG5DATA (-m 1), only on a SATA disk that holds no mounted
+filesystem and not the system. Errors go to stderr, one line, for the launcher's dialog.
+"""
+import glob
+import json
+import os
+import subprocess
+import sys
+import time
+
+CONF = "/etc/mrg5-storage.conf"
+FLAG = "/var/lib/mrg5-storage/first-check-done"
+MNT = "/mnt/mrg5-hdd"
+DATA = "/DATA"
+LABELS = ("MRG5DATA", "MRG5ROOT")
+OVERLAY_LABEL = "MRG5HDD"               # EMMC + internal HDD (checks/54)
+RELEASE = "/etc/mrg5-release"
+# Releases whose /DATA is fixed (checks/54): "EMMC Only" keeps it on the eMMC and never touches
+# an HDD; "EMMC + internal HDD" has everything, /DATA included, on the HDD already; "USB Boot"
+# keeps it on its USB drive and never uses the internal HDD (owner, 2026-10-01: a box whose USB
+# drive is removed boots its stock firmware, whose recovery formats the internal HDD, checks/42
+# §2a). Only systems without an edition (the development systems) still switch.
+FIXED = {"emmc": "emmc", "emmc-hdd": "hdd", "usb": "usb"}
+HDD_IDLE_TIMER = "240"        # hdparm -S 240 = 240 x 5 s: spin down after 20 idle minutes
+SERVICES = ["casaos-app-management.service", "casaos-local-storage.service",
+            "casaos-user-service.service", "casaos-message-bus.service",
+            "casaos-gateway.service", "casaos.service", "docker.service", "docker.socket",
+            "containerd.service", "smbd.service", "nmbd.service"]
+
+
+class Failure(Exception):
+    pass
+
+
+def log(*a):
+    print(*a, file=sys.stderr, flush=True)
+
+
+def run(*cmd, check=True):
+    p = subprocess.run(cmd, capture_output=True, text=True)
+    if check and p.returncode:
+        lines = (p.stderr or p.stdout).strip().splitlines()
+        raise Failure("%s: %s" % (" ".join(cmd[:2]), lines[-1] if lines else "failed"))
+    return p.stdout
+
+
+def mounted_source(path):
+    return run("findmnt", "-n", "-o", "SOURCE", "--mountpoint", path, check=False).strip()
+
+
+def parent_disk(dev):
+    name = run("lsblk", "-n", "-o", "PKNAME", dev, check=False).strip().splitlines()
+    return "/dev/" + name[0] if name else dev
+
+
+def root_disk():
+    return parent_disk(run("findmnt", "-n", "-o", "SOURCE", "/").strip())
+
+
+def sata_disks():
+    return sorted("/dev/" + os.path.basename(d) for d in glob.glob("/sys/block/sd*")
+                  if "/ata" in os.path.realpath(d))
+
+
+def hdd():
+    """(state, disk, partition): state absent | system | overlay | ready | needs-format.
+    overlay: the HDD of EMMC + internal HDD (MRG5HDD), which holds the system's overlay and
+    /DATA (work/emmc-release/mrg5-overlay-init)."""
+    disks = sata_disks()
+    if not disks:
+        return "absent", None, None
+    rd = root_disk()
+    if rd in disks:
+        return "system", rd, None
+    disk = disks[0]
+    out = run("lsblk", "-n", "-p", "-r", "-o", "NAME,FSTYPE,LABEL", disk, check=False)
+    for line in out.splitlines():
+        f = line.split()
+        if len(f) >= 3 and f[1] == "ext4" and f[2] == OVERLAY_LABEL:
+            return "overlay", disk, f[0]
+    for line in out.splitlines():
+        f = line.split()
+        if len(f) >= 3 and f[1] == "ext4" and f[2] in LABELS:
+            return "ready", disk, f[0]
+    return "needs-format", disk, None
+
+
+def current():
+    """Where /DATA is now: hdd or usb."""
+    state, _disk, part = hdd()
+    if state == "system":
+        return "hdd"
+    src = mounted_source(DATA)
+    return "hdd" if src and part and src.startswith(part) else "usb"
+
+
+def edition():
+    """The release edition from /etc/mrg5-release (usb, emmc, emmc-hdd), or ""."""
+    try:
+        with open(RELEASE) as f:
+            for line in f:
+                k, _, v = line.strip().partition("=")
+                if k == "edition":
+                    return v.strip()
+    except OSError:
+        pass
+    return ""
+
+
+def fixed():
+    """Where /DATA always is on this release, or None when it can be switched."""
+    return FIXED.get(edition())
+
+
+def conf_get():
+    try:
+        with open(CONF) as f:
+            for line in f:
+                k, _, v = line.strip().partition("=")
+                if k.strip() == "storage" and v.strip() in ("usb", "hdd"):
+                    return v.strip()
+    except OSError:
+        pass
+    return "usb"
+
+
+def conf_set(value):
+    with open(CONF, "w") as f:
+        f.write("# /DATA on the system disk (usb) or the internal HDD (hdd); mrg5-storage\n"
+                "storage=%s\n" % value)
+        f.flush()
+        os.fsync(f.fileno())
+
+
+def mount_hdd(part):
+    os.makedirs(MNT, exist_ok=True)
+    if not mounted_source(MNT):
+        run("mount", "-o", "noatime", part, MNT)
+
+
+def skeleton(src, dst):
+    """Create dst and the folder tree of src below it (folders only, 3 levels), with owners and
+    modes, so the programs find their folders on an empty data disk."""
+    os.makedirs(dst, exist_ok=True)
+    st = os.stat(src) if os.path.isdir(src) else None
+    if st:
+        os.chmod(dst, st.st_mode & 0o7777)
+        os.chown(dst, st.st_uid, st.st_gid)
+    if not os.path.isdir(src):
+        return
+    base = src.rstrip("/").count("/")
+    for dirpath, dirnames, _files in os.walk(src):
+        if dirpath.count("/") - base >= 3:
+            dirnames[:] = []
+            continue
+        for d in dirnames:
+            s = os.path.join(dirpath, d)
+            t = os.path.join(dst, os.path.relpath(s, src))
+            if not os.path.exists(t):
+                st = os.stat(s)
+                os.mkdir(t, st.st_mode & 0o7777)
+                os.chown(t, st.st_uid, st.st_gid)
+
+
+def active_services():
+    return [s for s in SERVICES
+            if subprocess.run(["systemctl", "is-active", "--quiet", s]).returncode == 0]
+
+
+def stop(services):
+    if services:
+        run("systemctl", "stop", *services)
+
+
+def start(services):
+    order = [s for s in reversed(SERVICES) if s in services]
+    if order:
+        run("systemctl", "start", *order, check=False)
+
+
+def bind_hdd():
+    run("mount", "--bind", os.path.join(MNT, "DATA"), DATA)
+
+
+def unbind():
+    if mounted_source(DATA):
+        run("umount", DATA)
+    if mounted_source(MNT):
+        run("umount", MNT, check=False)
+
+
+def format_disk(disk):
+    if disk == root_disk():
+        raise Failure("%s holds the system" % disk)
+    mounted = run("lsblk", "-n", "-o", "MOUNTPOINT", disk, check=False).split()
+    if mounted:
+        raise Failure("%s has mounted filesystems (%s)" % (disk, " ".join(mounted)))
+    log("formatting", disk)
+    parts = run("lsblk", "-n", "-p", "-r", "-o", "NAME", disk).split()
+    run("wipefs", "-a", *reversed(parts))
+    p = subprocess.run(["sfdisk", "-q", disk], input="label: gpt\nstart=2048, type=linux\n",
+                       capture_output=True, text=True)
+    if p.returncode:
+        raise Failure("sfdisk: " + (p.stderr.strip().splitlines() or ["failed"])[-1])
+    run("blockdev", "--rereadpt", disk, check=False)
+    run("udevadm", "settle", check=False)
+    part = run("lsblk", "-n", "-p", "-r", "-o", "NAME,TYPE", disk).split()
+    part = [part[i] for i in range(0, len(part) - 1, 2) if part[i + 1] == "part"]
+    if not part:
+        raise Failure("the new partition did not appear")
+    run("mkfs.ext4", "-F", "-q", "-L", "MRG5DATA", "-m", "1", part[0])
+    run("udevadm", "settle", check=False)
+    return part[0]
+
+
+def use_hdd(fmt):
+    if fixed():
+        raise Failure("This release keeps its data storage fixed")
+    state, disk, part = hdd()
+    if state == "absent":
+        raise Failure("No HDD is attached")
+    if state == "system":
+        raise Failure("The system itself runs from the HDD")
+    if current() == "hdd":
+        return
+    services = active_services()
+    stop(services)
+    try:
+        if state == "needs-format":
+            if not fmt:
+                raise Failure("The HDD has to be formatted")
+            part = format_disk(disk)
+        mount_hdd(part)
+        skeleton(DATA, os.path.join(MNT, "DATA"))
+        bind_hdd()
+        conf_set("hdd")
+    finally:
+        start(services)
+
+
+def use_usb():
+    if fixed():
+        raise Failure("This release keeps its data storage fixed")
+    if hdd()[0] == "system":
+        raise Failure("The system itself runs from the HDD")
+    if current() == "usb":
+        conf_set("usb")
+        return
+    services = active_services()
+    stop(services)
+    try:
+        unbind()
+        os.makedirs(DATA, exist_ok=True)
+        conf_set("usb")
+    finally:
+        start(services)
+
+
+def boot():
+    subprocess.run(["udevadm", "settle", "--timeout=20"])
+    state, disk, part = hdd()
+    if state in ("ready", "needs-format", "overlay"):
+        # the HDD holds no system root here (data, or EMMC + internal HDD's overlay): it may
+        # sleep (mrg5-standby off sets the same)
+        subprocess.run(["hdparm", "-S", HDD_IDLE_TIMER, disk], capture_output=True)
+    if fixed():
+        return                          # nothing to move or mount on these releases
+    if not os.path.exists(FLAG):
+        if state == "ready":
+            mount_hdd(part)
+            if os.path.isdir(os.path.join(MNT, "DATA")):
+                conf_set("hdd")
+                log("first boot: the HDD has a DATA folder, /DATA moves to it")
+        os.makedirs(os.path.dirname(FLAG), exist_ok=True)
+        with open(FLAG, "w") as f:
+            f.write(time.strftime("%Y-%m-%d %H:%M:%S\n"))
+    if state == "system":
+        return
+    if conf_get() == "hdd":
+        if state != "ready":
+            log("storage=hdd, but the HDD is", state, "- /DATA stays on the system disk this boot")
+            return
+        mount_hdd(part)
+        skeleton(DATA, os.path.join(MNT, "DATA"))
+        if not mounted_source(DATA):
+            bind_hdd()
+        log("/DATA is the HDD's", part)
+    elif mounted_source(MNT) and not mounted_source(DATA):
+        run("umount", MNT, check=False)
+
+
+def status():
+    state, disk, part = hdd()
+    try:
+        st = os.statvfs(DATA)
+        free = st.f_bavail * st.f_frsize
+    except OSError:
+        free = 0
+    if fixed():
+        root = "usb" if edition() == "usb" else "emmc"
+        print(json.dumps({"root": root, "storage": fixed(), "hdd": state, "disk": disk,
+                          "partition": part, "setting": fixed(), "free_bytes": free,
+                          "switchable": False, "edition": edition()}))
+        return
+    root = "hdd" if state == "system" else "usb"
+    print(json.dumps({"root": root, "storage": current(), "hdd": state, "disk": disk,
+                      "partition": part, "setting": conf_get(), "free_bytes": free,
+                      "switchable": root == "usb", "edition": edition()}))
+
+
+def main():
+    cmd = sys.argv[1:] or [""]
+    try:
+        if cmd[0] == "status":
+            status()
+        elif cmd[0] == "use-hdd":
+            use_hdd("--format" in cmd)
+        elif cmd[0] == "use-usb":
+            use_usb()
+        elif cmd[0] == "boot":
+            boot()
+        else:
+            sys.exit(__doc__)
+    except (Failure, OSError) as e:
+        log(str(e))
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()

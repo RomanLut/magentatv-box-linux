@@ -1,0 +1,152 @@
+#!/bin/sh
+export PATH=/bin
+export HOME=/
+export TERM=linux
+
+mount -t devtmpfs devtmpfs /dev
+mount -t proc proc /proc
+mount -t sysfs sysfs /sys
+mkdir -p /dev/pts /run
+mount -t devpts devpts /dev/pts 2>/dev/null || true
+mdev -s
+
+# The kernel prints "unable to open an initial console" because /dev/console
+# does not exist until devtmpfs is mounted above - which happens inside this
+# script, i.e. after PID 1 has already had its stdio set up.  Everything echoed
+# before this point therefore goes nowhere.  Reattach now, so the rest of the
+# boot (including the DHCP supervisor) is visible on UART.
+[ -c /dev/console ] && exec >/dev/console 2>&1 </dev/console
+
+echo MRG5_LINUX_FULL_INIT
+uname -a
+
+# Front LEDs: booting (work/linux-full-root/leds-early.sh), as soon after BLS1 as possible.
+[ -f /leds-early.sh ] && sh /leds-early.sh
+
+# Boot the Debian system on the MRG5ROOT partition when there is one
+# (work/nas/stage1-root.sh). Returns here only to stay in this rescue system.
+[ -f /stage1-root.sh ] && . /stage1-root.sh
+
+# ---------------------------------------------------------------- networking
+#
+# Static fallback address, brought up FIRST and deliberately as the primary
+# address on eth0.  Two reasons:
+#
+#  1. The box must be reachable even when DHCP never succeeds.  Losing the
+#     network here means falling back to UART for everything.
+#  2. Because it is added first it becomes the *primary* address, so udhcpc's
+#     "deconfig" (which clears the eth0-labelled address) cannot take it away,
+#     and a later lease is simply added alongside it as a second address.
+#
+# 192.168.3.60 is this project's fixed address for the custom kernel; the stock
+# image publishes 192.168.3.222 the same way from mrg5-probe.sh.
+FALLBACK_IP=192.168.3.60
+FALLBACK_MASK=255.255.255.0
+
+for dev in eth0 eth1; do
+    [ -d /sys/class/net/$dev ] || continue
+    ifconfig $dev up
+done
+
+if [ -d /sys/class/net/eth0 ]; then
+    ifconfig eth0:1 "$FALLBACK_IP" netmask "$FALLBACK_MASK" up
+    echo "fallback address $FALLBACK_IP up on eth0:1"
+fi
+
+for dev in eth0 eth1; do
+    [ -d /sys/class/net/$dev ] || continue
+    echo "Starting persistent DHCP supervisor for $dev"
+    (
+        # GENET link training finishes after PID 1 has started - the kernel
+        # prints "Link is Up" well after /init begins - so wait for carrier
+        # rather than firing a discover into a dead link.
+        i=0
+        while [ "$(cat /sys/class/net/$dev/carrier 2>/dev/null)" != "1" ] && [ $i -lt 60 ]; do
+            sleep 1
+            i=$((i + 1))
+        done
+        echo "DHCP: $dev carrier=$(cat /sys/class/net/$dev/carrier 2>/dev/null) after ${i}s"
+
+        # Retry forever.  A single bounded attempt at boot is exactly what
+        # failed before: if no lease is available in the first ~30 s (switch
+        # still learning, server slow, link late) the address is lost for the
+        # whole uptime.  Do not use -n; its no-lease exit path did not receive
+        # a reply on this box while the normal client immediately did.
+        n=0
+        while :; do
+            n=$((n + 1))
+            echo "DHCP: discover on $dev (attempt $n)"
+            if udhcpc -i "$dev" -q -t 6 -T 3; then
+                echo "DHCP: lease obtained on $dev"
+                break
+            fi
+            sleep 10
+        done
+    ) &
+done
+
+# ------------------------------------------------------------------- dropbear
+mkdir -p /etc/dropbear /root/.ssh
+chmod 755 /root
+chmod 700 /root/.ssh
+chmod 600 /root/.ssh/authorized_keys
+echo "Starting Dropbear SSH (key-only) on TCP/22"
+dropbear -R -F -p 22 >/dev/null 2>&1 &
+dropbear_pid=$!
+sleep 1
+if kill -0 "$dropbear_pid" 2>/dev/null; then
+    echo "Dropbear running in foreground pid $dropbear_pid"
+else
+    echo "Dropbear did not start"
+fi
+
+# ------------------------------------------------------------------ inventory
+echo "=== block devices ==="
+cat /proc/partitions
+echo "=== ATA/SATA ==="
+for node in /sys/class/ata_port/*; do
+    [ -e "$node" ] || continue
+    printf '%s: ' "${node##*/}"
+    cat /sys/class/ata_link/link*/sata_spd 2>/dev/null || echo "(no link)"
+done
+for node in /sys/block/*; do
+    [ -e "$node" ] || continue
+    case "${node##*/}" in
+        sd*|hd*)
+            printf '%s model: ' "${node##*/}"
+            cat "$node/device/model" 2>/dev/null || true
+            ;;
+    esac
+done
+echo "=== MTD (NOR partitions from the device tree) ==="
+cat /proc/mtd 2>/dev/null || echo "(no /proc/mtd)"
+echo "=== memory ==="
+grep -E "MemTotal|HighTotal|LowTotal" /proc/meminfo
+echo "=== IPv4 addresses and routes ==="
+ifconfig 2>/dev/null | grep -E "^[a-z]|inet addr"
+/bin/busybox ip route 2>/dev/null || true
+# If the bootloader's single probe found no disk, keep asking.  Both BLS1 and
+# BLS2 probe SATA exactly once, at the coldest possible moment, and then delete
+# the SATA nodes from the device tree when that probe fails - but our AHCI and
+# PHY drivers register from board fallbacks regardless, so the controller is up
+# and the link can simply be retried.  Detection on this box is intermittent
+# (checks/35), which is precisely the case a one-shot probe handles worst.
+#
+# sata-retry looks only at the PHY detect field; it never reads a model or
+# serial, so it cannot reject any drive.
+# NB: /sys/class/ata_device is NOT a usable "is a disk attached" test - libata
+# creates dev1.0 for the port whether or not anything answers on the link.  Ask
+# the PHY instead, which is what sata-retry does.
+if [ -d /sys/class/ata_port/ata1 ]; then
+    echo "starting sata-retry supervisor in the background"
+    ( sata-retry supervise ) &
+fi
+
+echo "MRG5_LINUX_FULL_READY"
+echo "UART shell ready on ttyS0"
+export PS1='\u@MRG5:\w# '
+if [ -c /dev/console ]; then
+    exec /bin/sh -i </dev/console >/dev/console 2>&1
+else
+    exec /bin/sh -i
+fi

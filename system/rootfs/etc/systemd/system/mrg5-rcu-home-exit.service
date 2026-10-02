@@ -1,0 +1,13 @@
+# /etc/systemd/system/mrg5-rcu-home-exit.service (checks/41, "YouTube: TV
+# interface"): the remote's Home button closes YouTube TV (rcu-home-exit).
+[Unit]
+Description=MagentaTV remote: Home closes YouTube TV, volume keys set the volume (rcu-home-exit)
+After=bluetooth.service
+
+[Service]
+ExecStart=/usr/bin/python3 /usr/local/bin/rcu-home-exit
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

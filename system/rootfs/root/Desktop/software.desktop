@@ -1,0 +1,9 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Software
+Comment=Add, remove or update software (GNOME Software, Debian packages)
+Exec=gnome-software %U
+Icon=org.gnome.Software
+Terminal=false
+Categories=System;PackageManager;

@@ -1,0 +1,386 @@
+Mesa 22.3.6: make the Gallium v3d driver work on V3D 3.3 hardware.
+
+Mesa has carried the V3D 3.x code paths since the vc5 days, but they stopped
+being exercised after Mesa 19: the Raspberry Pi 4's V3D is 4.2, and everything
+older was only ever run against Broadcom's simulator.  Eleven defects, all
+V3D-3.x-only, stand between Debian's Mesa and a working GPU on the BCM7268 -
+the first five between it and a drawn triangle at all, the sixth between it and
+a GPU that does not corrupt the kernel, the seventh a workaround rather than a
+fix, the eighth between it and alpha blending, the ninth between it and
+sampling linear buffers such as other clients' windows, the tenth between it
+and texturing shaders that never finish, and the eleventh between it and
+projective texture lookups, fixed-function texturing among them (checks/53):
+
+1  nir_to_vir.c, vir_emit_last_thrsw(): a shader with no TMU access is dropped
+   to a single thread, which emits no thread switch, and the function then
+   dereferences the NULL c->last_thrsw.  The assert that guards it is compiled
+   out in a release build, so every such shader crashed the process - which on
+   V3D 3.x means every vertex shader.
+
+2  qpu_schedule.c, pixel_scoreboard_too_soon(): a single-threaded shader never
+   locks the scoreboard on a thread switch, so waiting for that lock never
+   ends.  Restore the pre-lock-on-thrsw rule for it: no TLB access in the very
+   first instruction.
+
+3  vir.c, vir_uniform(): before V3D 4.x there is no ldunifrf, so a uniform can
+   only be loaded into r5.  Load it there and copy it out at once, the way the
+   SFU results in r4 are handled, so that several uniforms can be live at once.
+   Upstream instead pins the ldunif temp to the r5 class and lets the register
+   allocator spill when two interfere; that was tried on this hardware and every
+   shader reading a uniform then rendered garbage, so this hunk is required.
+
+4  nir_to_vir.c + v3d33_vpm_setup.c + v3d_compiler.h, vir_VPM_WRITE(): the V3D
+   3.x branch carried a `/* XXX: v3d33_vir_vpm_write_setup(c); */` and wrote to
+   the VPM with no write setup at all.  Mesa 19 emitted one setup per shader
+   and wrote the outputs in slot order; 22.3 emits NIR store_output in whatever
+   order it likes, and the 4.x path takes the slot per write (stvpmv), so give
+   the 3.x setup an address parameter and emit one per write.
+
+5  nir_to_vir.c, emit_vert_end()/emit_geom_end(): vpmwt was emitted only for
+   V3D 4.0-4.2, as a workaround for GFXH-1684.  The instruction exists on V3D
+   3.3 as well, and there it is not optional: without it the coordinate
+   shader's VPM writes are not complete when the thread ends, so the PTB bins
+   stale vertex data.  This is what made the hardware look dead - the binner
+   allocated tile lists and the renderer executed them, but a job with a single
+   triangle produced no pixels at all, while a job with dozens produced a
+   window of about five primitives (one 16-vertex batch) at random.
+
+6  v3d_job.c, v3d_job_submit(): tile_alloc and tile_state were added to the
+   job's BO list only on the >= 4.1 path, so on V3D 3.3 nothing kept them
+   alive while the GPU wrote its tile lists into them (see the hunk comment).
+
+7  v3d_blit.c + v3d_screen.c: the TFU takes the whole SoC down on V3D 3.3.
+   glGenerateMipmap on its own is enough - offscreen, no X, no compositor - and
+   the console shows the texture L2 (client 0x0f by the 4.1 client table)
+   reading a wild address, then the machine stops answering.  Mesa's TFU
+   submission is unchanged from 19.0 apart from renames, so there is no older
+   working version to restore and no upstream fix to copy; what this does
+   instead is stop using the block on the generation where it does not work,
+   the way this driver already handles its other pre-4.x gaps (PIPE_CAP_COMPUTE
+   is gated on ver >= 41, v3d_tlb_blit returns early on ver < 40).  Both callers
+   of v3d_tfu() already have a fallback: the state tracker draws the mipmap
+   levels with util_gen_mipmap, and the blit path takes another route.  Mipmap
+   generation costs ~4x more this way and the SoC stays up (checks/53 §9).
+
+   This is a workaround, not a fix.  Why the TFU misbehaves here is not known.
+
+8  v3d_packet_v33.xml, Blend Cfg: the packet is one opcode byte and a 32-bit
+   payload on V3D 3.3, not 24 bits.  Broadcom's own driver for this chip
+   (libv3ddriver.so on the stock rootfs, emitter at .text 0x9bb22) writes
+   opcode 0x54 and four payload bytes, and its CL decoder carries a vg_mode
+   field at bits 28-29.  Mesa's v3.3 definition ends at bit 23, so the packer
+   emitted four bytes: the command-list parser took the next packet's opcode
+   (Color Write Masks, 0x57) as the missing payload byte and then executed that
+   packet's zero mask byte as HALT.  The binner stopped there (CT0CA was
+   exactly one past that byte), the render job waited for tile lists that never
+   came, and the kernel reset the GPU twice for every blended job - which is
+   what glamor and glmark2 stormed on.  Declaring the vendor's field makes the
+   packet the right length; Mesa leaves it at 0, which is also what the vendor
+   writes on its normal path.
+
+9  v3dx_emit.c, emit_one_texture(): the V3D 3.x texture state took its base
+   address from psview->texture, the resource as the state tracker sees it.
+   The TMU cannot sample raster (linear) memory, so v3d_create_sampler_view()
+   gives a linear resource a tiled shadow copy in sview->texture, refreshes it
+   before each draw, and ORs the shadow's layout bits into this very state - but
+   the address still pointed at the linear original, so the TMU read raster
+   memory as UIF.  Every imported linear buffer came out scrambled in 4x4
+   utiles, which is how a GL client's window looked under glamor (DRI3 hands X
+   the client's linear back buffer).  The V3D 4.x path,
+   v3d_create_texture_shader_state_bo(), already uses so->texture; this does
+   the same.  Measured with a linear GBM buffer sampled into an FBO: 89 992 of
+   90 000 pixels wrong before, 0 after.
+
+10 qpu_schedule.c, calculate_deps(): a TMU load (ldtmu) could be scheduled
+   before the write that starts its lookup, and the shader then waits forever
+   for a result that was never requested.  Until Mesa 21.0 every ldtmu had a
+   write dependency on the last TMU write.  The 2021 scheduler work for V3D
+   4.x (177dcd4b "be more flexible scheduling TMU writes", c3c251d9 "flag TMU
+   reads with a read dependency on last TMU config", MRs 9555/9856) keeps
+   ldtmu only after the last "sequence terminator", and
+   tmu_write_is_sequence_terminator() lists only 4.x registers (TMUS, TMUSCM,
+   TMUSF, TMUSLOD, TMUA, TMUAU).  On V3D 3.x the lookup starts with the TMUL
+   write, so nothing orders ldtmu after it.  Whether the scheduler moves it up
+   depends on register pressure.  glamor's composite shader, compiled for a
+   BGRA render target (the R/B swap variant X uses for every depth-32
+   pixmap), came out as `mov tmu ; ldtmu ; mov tmul`.  The fragment shader
+   never ended, so the tile never finished: the render list ran to its end,
+   and no frame was counted.  That was every one of the ~60 GPU resets a
+   minute on the Xfce desktop.  This restores the pre-21.1 rule for V3D < 4.0
+   only; 4.x keeps the new flexibility.
+
+11 qpu_schedule.c, fixup_pipelined_ldvary() and qpu_merge_inst(): two ldvary
+   signals could end up in one instruction, and one varying read vanished.
+   Each ldvary reads the next varying component in order.  Both places refuse
+   a second ldvary only through v3d_qpu_sig_writes_address(): on V3D 4.x
+   ldvary writes an explicit register, so that catches it; on V3D 3.x ldvary
+   writes r3/r5 implicitly, has no address, and the check passes.  The 2021
+   ldvary pipelining (1784dd22 and follow-ups, tested on 4.x) then set ldvary
+   on an instruction that already had one.  Mesa's fixed-function fragment
+   shader reads TEX0 as s, t, r, q (r unused) for its projective lookup: 4
+   ldvary in the VIR, 3 in the QPU code, q read as r = 0, 1/q infinite, and
+   every texel taken from the texture's corner.  GLSL texture2DProj() failed
+   the same way.  That was xfwm4's GLX compositor (vblank_mode auto) showing
+   one solid colour instead of the desktop.  This makes both places refuse a
+   second ldvary outright; on 4.x they already did.
+
+Applied on top of Debian's mesa 22.3.6-1+deb12u2 source.
+
+--- a/src/broadcom/cle/v3d_packet_v33.xml
++++ b/src/broadcom/cle/v3d_packet_v33.xml
+@@ -781,6 +781,7 @@
+   </packet>
+ 
+   <packet code="84" name="Blend Cfg" max_ver="33">
++    <field name="VG mode" size="2" start="28" type="uint"/>
+     <field name="Color blend dst factor" size="4" start="20" type="Blend Factor"/>
+     <field name="Color blend src factor" size="4" start="16" type="Blend Factor"/>
+     <field name="Color blend mode" size="4" start="12" type="Blend Mode"/>
+--- a/src/broadcom/compiler/nir_to_vir.c
++++ b/src/broadcom/compiler/nir_to_vir.c
+@@ -2072,7 +2072,13 @@
+                 vir_VPM_WRITE_indirect(c, val,
+                                        vir_uniform_ui(c, vpm_index), true);
+         } else {
+-                /* XXX: v3d33_vir_vpm_write_setup(c); */
++                /* V3D 3.x writes the VPM through the auto-incrementing
++                 * address of the write setup, and the outputs are not stored
++                 * in slot order (the fixed-function Xs/Ys/Zs/1/Wc in slots
++                 * 0-3 come after the shader's own varyings), so point the
++                 * setup at this output's slot first.
++                 */
++                v3d33_vir_vpm_write_setup(c, vpm_index);
+                 vir_MOV_dest(c, vir_reg(QFILE_MAGIC, V3D_QPU_WADDR_VPM), val);
+         }
+ }
+@@ -2082,7 +2088,7 @@
+ {
+         /* GFXH-1684: VPM writes need to be complete by the end of the shader.
+          */
+-        if (c->devinfo->ver >= 40 && c->devinfo->ver <= 42)
++        if (c->devinfo->ver <= 42)
+                 vir_VPMWT(c);
+ }
+ 
+@@ -2091,7 +2097,7 @@
+ {
+         /* GFXH-1684: VPM writes need to be complete by the end of the shader.
+          */
+-        if (c->devinfo->ver >= 40 && c->devinfo->ver <= 42)
++        if (c->devinfo->ver <= 42)
+                 vir_VPMWT(c);
+ }
+ 
+@@ -4594,7 +4600,14 @@
+                 *restore_last_thrsw = c->last_thrsw;
+         }
+ 
+-        assert(c->last_thrsw);
++        /* A single-threaded shader (V3D 3.x without a TMU access, above)
++         * emits no thread switch at all, so there is none to mark.
++         */
++        if (!c->last_thrsw) {
++                assert(c->threads == 1);
++                return;
++        }
++
+         c->last_thrsw->is_last_thrsw = true;
+ }
+ 
+--- a/src/broadcom/compiler/qpu_schedule.c
++++ b/src/broadcom/compiler/qpu_schedule.c
+@@ -412,6 +412,12 @@
+                 add_write_dep(state, &state->last_tmu_read, n);
+                 /* Keep TMU loads after their TMU lookup terminator */
+                 add_read_dep(state, state->last_tmu_config, n);
++                /* V3D 3.x starts the lookup with the TMUL write, which
++                 * tmu_write_is_sequence_terminator() does not know, so keep
++                 * TMU loads after the last TMU write as before Mesa 21.1.
++                 */
++                if (state->devinfo->ver < 40)
++                        add_write_dep(state, &state->last_tmu_write, n);
+         }
+ 
+         /* Allow wrtmuc to be reordered with other instructions in the
+@@ -594,6 +600,14 @@
+                           struct choose_scoreboard *scoreboard,
+                           const struct v3d_qpu_instr *inst)
+ {
++        /* A single-threaded shader (V3D 3.x without a TMU access) has no
++         * thread switch to lock the scoreboard with, so waiting for one would
++         * never end.  Keep only the rule from before the lock-on-thrsw
++         * scheme: no TLB access in the very first instruction.
++         */
++        if (c->threads == 1)
++                return scoreboard->tick == 0 && qpu_inst_is_tlb(inst);
++
+         return qpu_inst_is_tlb(inst) &&
+                !scoreboard_is_locked(scoreboard,
+                                      c->lock_scoreboard_on_first_thrsw);
+@@ -944,6 +958,13 @@
+         if (!qpu_compatible_peripheral_access(devinfo, a, b))
+                 return false;
+ 
++        /* one ldvary per instruction: each reads the next varying.  On V3D
++         * 3.x ldvary has no address for the sig_writes_address() check below
++         * to catch.
++         */
++        if (a->sig.ldvary && b->sig.ldvary)
++                return false;
++
+         struct v3d_qpu_instr merge = *a;
+         const struct v3d_qpu_instr *add_instr = NULL, *mul_instr = NULL;
+ 
+@@ -2127,6 +2148,12 @@
+         if (v3d_qpu_sig_writes_address(c->devinfo, &prev->qpu.sig))
+                 return false;
+ 
++        /* ... nor an ldvary of its own (one ldvary per instruction; on V3D
++         * 3.x ldvary writes no address, so the check above misses it).
++         */
++        if (prev->qpu.sig.ldvary)
++                return false;
++
+         uint32_t sig;
+         struct v3d_qpu_sig new_sig = prev->qpu.sig;
+         new_sig.ldvary = true;
+--- a/src/broadcom/compiler/v3d33_vpm_setup.c
++++ b/src/broadcom/compiler/v3d33_vpm_setup.c
+@@ -54,7 +54,7 @@
+ }
+ 
+ void
+-v3d33_vir_vpm_write_setup(struct v3d_compile *c)
++v3d33_vir_vpm_write_setup(struct v3d_compile *c, uint32_t addr)
+ {
+         uint32_t packed;
+         struct V3D33_VPM_GENERIC_BLOCK_WRITE_SETUP unpacked = {
+@@ -65,7 +65,7 @@
+                 .segs = true,
+                 .stride = 1,
+                 .size = VPM_SETUP_SIZE_32_BIT,
+-                .addr = 0,
++                .addr = addr,
+         };
+ 
+         V3D33_VPM_GENERIC_BLOCK_WRITE_SETUP_pack(NULL,
+--- a/src/broadcom/compiler/v3d_compiler.h
++++ b/src/broadcom/compiler/v3d_compiler.h
+@@ -1179,7 +1179,7 @@
+ bool v3d_nir_lower_load_store_bitsize(nir_shader *s, struct v3d_compile *c);
+ 
+ void v3d33_vir_vpm_read_setup(struct v3d_compile *c, int num_components);
+-void v3d33_vir_vpm_write_setup(struct v3d_compile *c);
++void v3d33_vir_vpm_write_setup(struct v3d_compile *c, uint32_t addr);
+ void v3d33_vir_emit_tex(struct v3d_compile *c, nir_tex_instr *instr);
+ void v3d40_vir_emit_tex(struct v3d_compile *c, nir_tex_instr *instr);
+ void v3d40_vir_emit_image_load_store(struct v3d_compile *c,
+--- a/src/broadcom/compiler/vir.c
++++ b/src/broadcom/compiler/vir.c
+@@ -2110,6 +2110,23 @@
+         struct qinst *inst = vir_NOP(c);
+         inst->qpu.sig.ldunif = true;
+         inst->uniform = index;
++
++        /* Before V3D 4.x there is no ldunifrf: a uniform can only be loaded
++         * into r5, which holds a single value.  Load it there and copy it
++         * out at once, like the SFU results in r4, so that any number of
++         * uniforms can be live together (one instruction may read two).
++         *
++         * Upstream instead pins the ldunif's temp to the r5 class and lets the
++         * allocator spill when two interfere (vir_register_allocate.c, "Until
++         * V3D 4.x").  That does not work here: without this, every shader that
++         * reads a uniform renders garbage - the whole framebuffer comes back
++         * non-clear - while a shader with no uniform is still exact (checks/53).
++         */
++        if (c->devinfo->ver < 40) {
++                inst->dst = vir_reg(QFILE_MAGIC, V3D_QPU_WADDR_R5);
++                return vir_MOV(c, vir_reg(QFILE_MAGIC, V3D_QPU_WADDR_R5));
++        }
++
+         inst->dst = vir_get_temp(c);
+         c->defs[inst->dst.index] = inst;
+         return inst->dst;
+--- a/src/gallium/drivers/v3d/v3d_job.c
++++ b/src/gallium/drivers/v3d/v3d_job.c
+@@ -537,15 +537,26 @@
+         if (job->tmu_dirty_rcl && screen->has_cache_flush)
+                 job->submit.flags |= DRM_V3D_SUBMIT_CL_FLUSH_CACHE;
+ 
++        /* The binner writes its tile lists into tile_alloc and tile_state and
++         * the renderer reads them, so the kernel has to hold both for the
++         * lifetime of the job - on every V3D generation.  Upstream adds them
++         * to the BO list only on the >= 4.1 path, where they are also passed
++         * as qma/qms/qts; before 4.1 they are handed over in binner packets
++         * instead and were never added at all, so nothing kept them alive.
++         * v3d_job_free() drops Mesa's own reference as soon as the job is
++         * submitted, and the GPU then writes into memory the kernel has
++         * already unmapped and handed to something else - proved on this box
++         * with a fault-time lookup of recently unmapped ranges (checks/53).
++         */
++        v3d_job_add_bo(job, job->tile_alloc);
++        v3d_job_add_bo(job, job->tile_state);
++
+         /* On V3D 4.1, the tile alloc/state setup moved to register writes
+          * instead of binner packets.
+          */
+         if (screen->devinfo.ver >= 41) {
+-                v3d_job_add_bo(job, job->tile_alloc);
+                 job->submit.qma = job->tile_alloc->offset;
+                 job->submit.qms = job->tile_alloc->size;
+-
+-                v3d_job_add_bo(job, job->tile_state);
+                 job->submit.qts = job->tile_state->offset;
+         }
+ 
+--- a/src/gallium/drivers/v3d/v3d_blit.c
++++ b/src/gallium/drivers/v3d/v3d_blit.c
+@@ -230,6 +230,17 @@
+         if (psrc->nr_samples != pdst->nr_samples)
+                 return false;
+ 
++        /* The TFU takes the whole SoC down on V3D 3.3: glGenerateMipmap alone
++         * is enough, offscreen, with no X involved, and the console shows the
++         * texture L2 reading a wild address before it dies (checks/53).  Both
++         * callers fall back when this returns false - the state tracker uses
++         * util_gen_mipmap, and the blit path takes another route - so gate it
++         * the way this driver already gates its other pre-4.x gaps
++         * (PIPE_CAP_COMPUTE on ver >= 41, v3d_tlb_blit on ver < 40).
++         */
++        if (screen->devinfo.ver < 40)
++                return false;
++
+         /* Can't write to raster. */
+         if (dst_base_slice->tiling == V3D_TILING_RASTER)
+                 return false;
+--- a/src/gallium/drivers/v3d/v3d_screen.c
++++ b/src/gallium/drivers/v3d/v3d_screen.c
+@@ -180,7 +180,9 @@
+                 return screen->has_csd && screen->devinfo.ver >= 41;
+ 
+         case PIPE_CAP_GENERATE_MIPMAP:
+-                return v3d_has_feature(screen, DRM_V3D_PARAM_SUPPORTS_TFU);
++                /* the TFU that implements this wedges V3D 3.3 (checks/53) */
++                return v3d_has_feature(screen, DRM_V3D_PARAM_SUPPORTS_TFU) &&
++                       screen->devinfo.ver >= 40;
+ 
+         case PIPE_CAP_INDEP_BLEND_ENABLE:
+                 return screen->devinfo.ver >= 40;
+--- a/src/gallium/drivers/v3d/v3dx_emit.c
++++ b/src/gallium/drivers/v3d/v3dx_emit.c
+@@ -120,7 +120,14 @@
+         struct v3d_sampler_state *sampler = v3d_sampler_state(psampler);
+         struct pipe_sampler_view *psview = stage_tex->textures[i];
+         struct v3d_sampler_view *sview = v3d_sampler_view(psview);
+-        struct pipe_resource *prsc = psview->texture;
++        /* sview->texture, not psview->texture: for a raster (linear)
++         * resource the sampler view samples a tiled shadow copy
++         * (v3d_create_sampler_view()), and the texture state OR-ed in below
++         * describes that shadow.  Pointing the TMU at the raster original
++         * makes it read raster memory as tiled.  The V3D 4.x path
++         * (v3d_create_texture_shader_state_bo()) already uses so->texture.
++         */
++        struct pipe_resource *prsc = sview->texture;
+         struct v3d_resource *rsc = v3d_resource(prsc);
+         const struct v3d_device_info *devinfo = &v3d->screen->devinfo;
+ 

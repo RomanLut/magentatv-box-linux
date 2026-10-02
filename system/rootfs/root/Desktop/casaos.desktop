@@ -1,0 +1,9 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=CasaOS
+Comment=NAS dashboard, files and Docker apps
+Exec=/usr/local/bin/chromium --start-maximized --app=http://localhost/
+Icon=/usr/local/share/icons/casaos.png
+Terminal=false
+Categories=Network;System;

@@ -1,0 +1,27 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 Roman Lut
+# /usr/local/lib/mrg5-launcher/session (checks/41, "TV launcher"): the X session of the TV
+# launcher, started by start-launcher through xinit. A window manager without compositing
+# (xfwm4 --compositor=off: nothing is redrawn while the screen is still), Xfce's settings
+# daemon (the same DPI, theme and fonts for Chromium and Kodi as on the desktop) and the
+# launcher. If the launcher exits it is started again, at most 5 times in a row within a
+# minute each; then the session ends and the text console comes back.
+xset s off -dpms
+# the screen's default pointer: a normal arrow instead of X's cross (programs such as
+# Chromium use it); the launcher hides the pointer over its own window itself
+xsetroot -solid '#0b2a14' -cursor_name left_ptr
+xfsettingsd --sm-client-disable &
+xfwm4 --compositor=off --sm-client-disable &
+# the launcher's window must be mapped after the window manager is up, or it gets no focus
+for i in $(seq 1 50); do
+	xprop -root _NET_SUPPORTING_WM_CHECK 2>/dev/null | grep -q "window id" && break
+	sleep 0.1
+done
+n=0
+while [ $n -lt 5 ]; do
+	t=$(date +%s)
+	python3 /usr/local/lib/mrg5-launcher/launcher.py
+	[ $(( $(date +%s) - t )) -gt 60 ] && n=0 || n=$((n + 1))
+	sleep 1
+done

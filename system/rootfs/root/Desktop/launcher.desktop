@@ -1,0 +1,9 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=TV Launcher
+Comment=Back to the TV launcher (ends this Xfce session)
+Exec=systemctl --no-block restart mrg5-launcher.service
+Icon=mrg5-launcher
+Terminal=false
+Categories=System;

@@ -1,0 +1,26 @@
+#!/bin/sh
+# kodi: start Kodi (Debian's kodi 20.1) from any prompt, like quake and retro-run.
+# In an X terminal it runs on that display; from ssh or a console it uses the
+# running desktop on :0. With no X server up it starts one of its own on vt7
+# that runs only Kodi (Debian's kodi-standalone), with the desktop's X config
+# (msdri3, page flips); quitting Kodi ends it and the screen returns to the
+# console. Kodi 20.1's own GBM mode is no use here: it takes only an output
+# that is already lit (encoder id > 0), and nothing lights the KMS output
+# before X does. Arguments are passed on to Kodi.
+#
+# It runs as root, like the desktop: a user (admin at the console) may not open
+# a VT for X, so the launcher starts itself again through sudo, allowed without
+# a password by /etc/sudoers.d/mrg5-kodi (as start-desktop's rule does).
+
+if [ "$(id -u)" != 0 ]; then
+	exec sudo -n /usr/local/bin/kodi "$@" ||
+		{ echo "kodi: needs root (sudo rule /etc/sudoers.d/mrg5-kodi)" >&2; exit 1; }
+fi
+if [ -n "$DISPLAY" ]; then
+	exec /usr/bin/kodi "$@"
+fi
+if [ -S /tmp/.X11-unix/X0 ]; then
+	DISPLAY=:0 exec /usr/bin/kodi "$@"
+fi
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+exec xinit /usr/bin/kodi-standalone "$@" -- /usr/bin/Xorg :0 vt7 -nolisten tcp

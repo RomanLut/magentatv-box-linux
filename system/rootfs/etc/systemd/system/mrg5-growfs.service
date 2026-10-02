@@ -1,0 +1,10 @@
+[Unit]
+Description=Grow the root filesystem to its partition
+ConditionPathExists=/mrg5/growfs
+
+[Service]
+Type=oneshot
+ExecStart=/bin/sh -c 'resize2fs "$(findmnt -no SOURCE /)" && rm -f /mrg5/growfs'
+
+[Install]
+WantedBy=multi-user.target

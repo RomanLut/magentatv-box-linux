@@ -1,0 +1,8 @@
+#!/bin/sh
+# /usr/local/bin/retroarch-menu (checks/41, "Games and emulators"): RetroArch's own menu, full
+# screen, as the TV launcher's RetroArch tile starts it. First the game lists are refreshed
+# (retroarch-menu-setup.py), so games copied into /DATA/Games/<system> since the last start
+# appear as their system's tab without running anything by hand. The script refuses while
+# RetroArch runs; the launcher starts one program at a time, so here it never does.
+python3 /usr/local/lib/mrg5-games/retroarch-menu-setup.py >/dev/null 2>&1 || true
+exec retroarch -f --appendconfig /usr/local/share/mrg5-games/retroarch-mrg5.cfg "$@"

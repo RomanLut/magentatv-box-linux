@@ -1,0 +1,15 @@
+# Unix line endings in every checkout, also on Windows: the scripts run on the box and in Linux
+# builds, where CRLF breaks them
+* text=auto eol=lf
+
+# binary files: never converted
+*.bin binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.svg text eol=lf
+*.img binary
+*.xz binary
+
+# patches stay byte-exact (some added kernel tables carry CRLF line ends, as generated)
+*.patch -text

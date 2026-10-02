@@ -1,0 +1,22 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 Roman Lut
+# /etc/systemd/system/mrg5-launcher.service (checks/41, "TV launcher"): the TV launcher at
+# boot. It and mrg5-desktop (Xfce) both use X on tty1, so starting one stops the other.
+[Unit]
+Description=TV launcher on the TV (start-launcher)
+After=systemd-user-sessions.service getty@tty1.service mrg5-v3d-overflow.service dbus.service mrg5-desktop.service
+Conflicts=mrg5-desktop.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/bin/start-launcher
+Environment=HOME=/root USER=root LOGNAME=root SHELL=/bin/bash
+EnvironmentFile=-/etc/default/locale
+TimeoutStartSec=120
+# Everything ends within a second of SIGTERM, except that xfwm4 has hung in its exit after X
+# was gone (2026-10-03); the XFCE Desktop tile then waited the default 90 s for the SIGKILL.
+TimeoutStopSec=5
+
+[Install]
+WantedBy=graphical.target

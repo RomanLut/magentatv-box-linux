@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=Kodi
+Comment=Media center: films, series, music, pictures
+Icon=kodi
+Exec=/usr/local/bin/kodi
+Categories=AudioVideo;Video;Player;TV;

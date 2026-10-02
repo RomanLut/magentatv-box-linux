@@ -1,0 +1,6 @@
+# /etc/sudoers.d/mrg5-desktop (checks/41, "TV launcher" and "Desktop"): the words the owner
+# types at the console login, "start", "xfce" and "stop" (shell functions at the end of
+# /home/admin/.bashrc and /usr/local/bin/xfce). sudo matches whole command lines, so each
+# form is listed exactly. admin already has full sudo with a password, so this grants no new
+# privilege, only the prompt-free path.
+admin ALL=(root) NOPASSWD: /usr/local/bin/start-desktop, /usr/local/bin/stop-desktop, /usr/bin/setsid /usr/local/bin/start-desktop, /usr/bin/systemctl --no-block restart mrg5-launcher.service, /usr/bin/systemctl --no-block restart mrg5-desktop.service, /usr/bin/systemctl stop mrg5-launcher.service mrg5-desktop.service

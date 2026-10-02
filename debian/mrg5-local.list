@@ -1,0 +1,5 @@
+#!/bin/bash
+# Local apt source used by work/desktop/install-x11.sh.  The box has no internet
+# access, so the X11 packages are installed from a file:// repository built from
+# the armhf debs in work/desktop/bundle/debs (fetched in WSL).
+deb [trusted=yes] file:/srv/mrg5-x11 ./

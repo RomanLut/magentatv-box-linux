@@ -1,0 +1,9 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Chromium
+Comment=Web browser (Raspberry Pi's Chromium, GPU mode)
+Exec=/usr/local/bin/chromium %U
+Icon=chromium
+Terminal=false
+Categories=Network;WebBrowser;

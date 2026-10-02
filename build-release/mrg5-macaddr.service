@@ -1,0 +1,17 @@
+# /etc/systemd/system/mrg5-macaddr.service (checks/54, "MAC address"): eth0 gets this box's MAC
+# address from its boot flash before the network starts (mrg5-macaddr).
+[Unit]
+Description=MRG5: Ethernet MAC address from the boot flash
+DefaultDependencies=no
+After=systemd-udevd.service systemd-udev-trigger.service sys-subsystem-net-devices-eth0.device
+Wants=sys-subsystem-net-devices-eth0.device
+Before=network-pre.target systemd-networkd.service
+Wants=network-pre.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/mrg5-macaddr
+
+[Install]
+WantedBy=sysinit.target

@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64">
+  <!-- SPDX-License-Identifier: GPL-3.0-or-later; Copyright (C) 2026 Roman Lut -->
+  <!-- status bar: settings gear -->
+  <g fill="#ffffff" transform="translate(32 32)">
+    <rect x="-6" y="-30" width="12" height="14" rx="2" transform="rotate(0)"/>
+    <rect x="-6" y="-30" width="12" height="14" rx="2" transform="rotate(45)"/>
+    <rect x="-6" y="-30" width="12" height="14" rx="2" transform="rotate(90)"/>
+    <rect x="-6" y="-30" width="12" height="14" rx="2" transform="rotate(135)"/>
+    <rect x="-6" y="-30" width="12" height="14" rx="2" transform="rotate(180)"/>
+    <rect x="-6" y="-30" width="12" height="14" rx="2" transform="rotate(225)"/>
+    <rect x="-6" y="-30" width="12" height="14" rx="2" transform="rotate(270)"/>
+    <rect x="-6" y="-30" width="12" height="14" rx="2" transform="rotate(315)"/>
+    <path fill-rule="evenodd" d="M0 -21 A21 21 0 1 1 0 21 A21 21 0 1 1 0 -21 Z M0 -9 A9 9 0 1 0 0 9 A9 9 0 1 0 0 -9 Z"/>
+  </g>
+</svg>

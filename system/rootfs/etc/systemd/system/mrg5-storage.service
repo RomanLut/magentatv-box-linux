@@ -1,0 +1,22 @@
+# /etc/systemd/system/mrg5-storage.service (checks/41, "Data storage"): puts /DATA on the
+# system disk or the internal HDD before anything that uses it starts; on the first boot of a
+# USB system it moves /DATA to an attached HDD that has a DATA folder.
+# Not Before=docker.socket: sockets.target (which pulls it in) is ordered before basic.target and
+# so before this unit; that ordering cycle made systemd drop this job at random boots
+# ("Job mrg5-storage.service/start deleted to break ordering cycle"). The socket only listens;
+# docker.service, which uses /DATA, is still ordered after this unit.
+[Unit]
+Description=MRG5 data storage (/DATA on the system disk or the HDD)
+After=local-fs.target
+Before=smbd.service nmbd.service containerd.service docker.service
+Before=casaos.service casaos-gateway.service casaos-message-bus.service
+Before=casaos-local-storage.service casaos-app-management.service casaos-user-service.service
+Before=mrg5-launcher.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/bin/mrg5-storage boot
+
+[Install]
+WantedBy=multi-user.target

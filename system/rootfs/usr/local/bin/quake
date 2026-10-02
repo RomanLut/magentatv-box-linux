@@ -1,0 +1,56 @@
+#!/bin/sh
+# quake: start Quake (Quakespasm). The release images carry no Quake game data: on first use
+# quake-shareware-setup offers to download id Software's shareware episode, shows its licence
+# and installs it in /usr/local/share/games/quake (checks/41, "Quake"); every later start is
+# offline. Data installed by Debian's game-data-packager (quake-shareware, quake-registered)
+# in /usr/share/games/quake is used as well.
+# In an X terminal it runs on that display; from ssh or a console it uses the
+# running desktop on :0, or goes straight to KMS when no X server is up.
+# With no arguments it starts fullscreen at the panel resolution, 1920x1080;
+# any arguments replace those defaults (e.g. quake -window -width 1280 -height 720).
+SETUP=/usr/local/lib/mrg5-games/quake-shareware-setup.py
+OURS=${MRG5_QUAKE_DIR:-/usr/local/share/games/quake}
+# (MRG5_QUAKE_DIR, MRG5_QUAKE_FALLBACK: other folders, for tests)
+DEBIAN=${MRG5_QUAKE_FALLBACK:-/usr/share/games/quake}
+
+if [ -z "$DISPLAY" ]; then
+	if [ -S /tmp/.X11-unix/X0 ]; then
+		export DISPLAY=:0
+	else
+		export SDL_VIDEODRIVER=kmsdrm
+	fi
+fi
+
+base() {
+	for d in "$OURS" "$DEBIAN"; do
+		[ -f "$d/id1/pak0.pak" ] && { echo "$d"; return 0; }
+	done
+	return 1
+}
+
+if ! BASE=$(base); then
+	# no game data yet: a terminal gets the text dialog, the TV (the launcher) the full-screen one
+	if [ -t 0 ] && [ -t 1 ]; then
+		mode=--tty
+	elif [ -n "$DISPLAY" ]; then
+		mode=--gui
+	else
+		echo "quake: no Quake game data, and no terminal or display to offer the download" >&2
+		exit 2
+	fi
+	if [ "$(id -u)" = 0 ]; then
+		python3 "$SETUP" "$mode"
+	elif [ "$mode" = --tty ]; then
+		sudo env MRG5_QUAKE_DIR="$OURS" python3 "$SETUP" --tty
+	else
+		echo "quake: installing the Quake game data needs root" >&2
+		exit 2
+	fi
+	rc=$?
+	[ $rc = 0 ] || exit $rc
+	BASE=$(base) || exit 2
+fi
+
+[ $# -eq 0 ] && set -- -fullscreen -width 1920 -height 1080
+
+exec /usr/games/quakespasm -basedir "$BASE" "$@"

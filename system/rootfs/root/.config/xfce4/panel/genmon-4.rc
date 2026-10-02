@@ -1,0 +1,6 @@
+Command=/usr/local/bin/ip-genmon
+UseLabel=1
+Text=IP
+UpdatePeriod=5000
+Font=Sans 10
+

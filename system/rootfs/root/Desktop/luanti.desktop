@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=Luanti
+Comment=Voxel game engine: mine, build and explore
+Icon=/usr/local/share/icons/hicolor/scalable/apps/luanti.svg
+Exec=/usr/local/bin/luanti-tv
+Categories=Game;
+Keywords=minetest;minecraft;voxel;sandbox;

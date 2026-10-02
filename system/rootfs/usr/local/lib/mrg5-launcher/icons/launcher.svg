@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">
+  <!-- SPDX-License-Identifier: GPL-3.0-or-later; Copyright (C) 2026 Roman Lut -->
+  <!-- the TV launcher: its row of tiles on a screen (desktop icon "TV Launcher") -->
+  <rect x="6" y="16" width="116" height="84" rx="14" fill="#123a1c" stroke="#b9f23f" stroke-width="6"/>
+  <rect x="20" y="34" width="24" height="42" rx="6" fill="#d8272a"/>
+  <rect x="52" y="30" width="24" height="50" rx="6" fill="#2a7de0" stroke="#dcff6a" stroke-width="3"/>
+  <rect x="84" y="34" width="24" height="42" rx="6" fill="#45b12f"/>
+  <rect x="44" y="104" width="40" height="8" rx="4" fill="#b9f23f"/>
+</svg>

@@ -1,0 +1,9 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=YouTube TV
+Comment=YouTube's TV interface, full screen, for the remote (arrows, OK, Back)
+Exec=/usr/local/bin/youtube-tv
+Icon=youtube-tv
+Terminal=false
+Categories=AudioVideo;Video;Player;

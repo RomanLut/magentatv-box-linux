@@ -1,0 +1,13 @@
+# /etc/systemd/system/mrg5-firstboot.service (checks/54): new SSH host keys on a box
+# installed from the release, whose image carries none (make-release.sh removes them).
+[Unit]
+Description=MRG5 first boot: SSH host keys
+ConditionPathExists=!/etc/ssh/ssh_host_ed25519_key
+Before=ssh.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/ssh-keygen -A
+
+[Install]
+WantedBy=multi-user.target

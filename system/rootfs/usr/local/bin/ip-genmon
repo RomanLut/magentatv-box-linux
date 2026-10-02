@@ -1,0 +1,7 @@
+#!/bin/sh
+# Xfce Generic Monitor: eth0 IPv4 on the panel, every eth0 address in the tooltip.
+v4=$(ip -4 -o addr show dev eth0 | awk "{print \$4}")
+v6=$(ip -6 -o addr show dev eth0 scope global | awk "{print \$4}")
+first=$(echo "$v4" | head -n1 | cut -d/ -f1)
+echo "<txt> ${first:-no IP} </txt>"
+printf "<tool>%s eth0\n%s</tool>\n" "$(hostname)" "$(printf "%s\n%s" "$v4" "$v6" | sed "/^\$/d")"

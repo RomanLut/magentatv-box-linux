@@ -1,0 +1,24 @@
+Put the MRG5 KMS driver ("mrg5", checks/53) on Mesa 22.3's kmsro list, so the
+loader pairs the display device with the V3D render node: mrg5_dri.so is the
+megadriver entry that runs kmsro, which renders on v3d and scans out on mrg5.
+
+--- a/src/gallium/targets/dri/meson.build
++++ b/src/gallium/targets/dri/meson.build
+@@ -83,6 +83,7 @@
+                'mediatek_dri.so',
+                'meson_dri.so',
+                'mi0283qt_dri.so',
++               'mrg5_dri.so',
+                'mxsfb-drm_dri.so',
+                'pl111_dri.so',
+                'rcar-du_dri.so',
+--- a/src/gallium/targets/dri/target.c
++++ b/src/gallium/targets/dri/target.c
+@@ -113,6 +113,7 @@
+ DEFINE_LOADER_DRM_ENTRYPOINT(mediatek)
+ DEFINE_LOADER_DRM_ENTRYPOINT(meson)
+ DEFINE_LOADER_DRM_ENTRYPOINT(mi0283qt)
++DEFINE_LOADER_DRM_ENTRYPOINT(mrg5)
+ DEFINE_LOADER_DRM_ENTRYPOINT(mxsfb_drm)
+ DEFINE_LOADER_DRM_ENTRYPOINT(pl111)
+ DEFINE_LOADER_DRM_ENTRYPOINT(rcar_du)

@@ -1,0 +1,44 @@
+#!/bin/sh
+# mrg5-casaos-preset (checks/54, "USB Boot"): at the first start, give the fresh CasaOS the
+# release's account user / user12345 (the public README documents it) and the guest share
+# /DATA, through CasaOS's own API, as its first-run page and its Files app do (the procedure of
+# the HDD restore, checks/41). Without it, whoever opened CasaOS first could create the account.
+# Run by mrg5-casaos-preset.service until it succeeds once (/var/lib/mrg5/casaos-preset-done).
+set -u
+API=http://127.0.0.1
+USER=user
+PASS=user12345
+json() { python3 -c "import json,sys; d=json.load(sys.stdin); print($1)"; }
+
+status=""
+for i in $(seq 1 60); do
+    status=$(curl -fsS "$API/v1/users/status" 2>/dev/null) && break
+    sleep 5
+done
+[ -n "$status" ] || { echo "CasaOS does not answer on $API" >&2; exit 1; }
+
+if [ "$(echo "$status" | json 'd["data"]["initialized"]')" != True ]; then
+    key=$(echo "$status" | json 'd["data"]["key"]')
+    curl -fsS -X POST -H 'Content-Type: application/json' \
+        -d "{\"username\":\"$USER\",\"password\":\"$PASS\",\"key\":\"$key\"}" \
+        "$API/v1/users/register" >/dev/null || { echo "registering the account failed" >&2; exit 1; }
+    echo "CasaOS account $USER created"
+fi
+
+token=$(curl -fsS -X POST -H 'Content-Type: application/json' \
+            -d "{\"username\":\"$USER\",\"password\":\"$PASS\"}" "$API/v1/users/login" |
+        json 'd["data"]["token"]["access_token"] if isinstance(d["data"]["token"], dict) else d["data"]["token"]') ||
+    { echo "login failed (account changed already?)" >&2; exit 1; }
+
+if ! curl -fsS -H "Authorization: $token" "$API/v1/samba/shares" | grep -q '"/DATA"'; then
+    curl -fsS -X POST -H "Authorization: $token" -H 'Content-Type: application/json' \
+        -d '[{"anonymous":true,"path":"/DATA"}]' "$API/v1/samba/shares" >/dev/null ||
+        { echo "creating the share failed" >&2; exit 1; }
+    echo "guest share /DATA created"
+fi
+# CasaOS writes the share into smb.casa.conf; smb.conf has to include it
+grep -q 'smb.casa.conf' /etc/samba/smb.conf ||
+    sed -i '/^[[:space:]]*map to guest = bad user/a\   include=/etc/samba/smb.casa.conf' /etc/samba/smb.conf
+systemctl restart smbd nmbd
+mkdir -p /var/lib/mrg5
+touch /var/lib/mrg5/casaos-preset-done

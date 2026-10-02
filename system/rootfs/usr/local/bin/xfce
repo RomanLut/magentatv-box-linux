@@ -1,0 +1,12 @@
+#!/bin/sh
+# /usr/local/bin/xfce (checks/41, "TV launcher"): start the Xfce desktop on the TV instead of
+# the launcher (mrg5-desktop.service runs start-desktop; the two units conflict, so the
+# launcher stops). Works as root or admin (sudo rule in /etc/sudoers.d/mrg5-desktop). At the
+# console it ends the login shell, since the desktop takes tty1. "start" brings the launcher back.
+if [ "$(id -u)" != 0 ]; then
+	sudo -n /usr/bin/systemctl --no-block restart mrg5-desktop.service ||
+		{ echo "xfce: sudo refused (check /etc/sudoers.d/mrg5-desktop)" >&2; exit 1; }
+else
+	systemctl --no-block restart mrg5-desktop.service
+fi
+echo "Xfce desktop starting on the TV"

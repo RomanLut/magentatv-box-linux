@@ -1,0 +1,178 @@
+#!/bin/bash
+# mrg5-emmc-install (checks/54, "eMMC release"): install the live system onto the eMMC.
+# Runs once in the live system booted from the release stick (mrg5-emmc-install.service,
+# only when /live/medium is mounted). Messages go to the TV (tty1, large font), the middle
+# front LED blinks green while it works, is steady green when done and red on an error.
+#
+# eMMC after the installation (GPT):
+#   1  splash    256 MiB  FAT32 "MRG5-EMMC": Testapp6/BOOT/ startup.ini, boot.ini, kernel,
+#                          device tree. BOLT's STARTUP runs startup.ini from here
+#                          (emmcflash0.splash, checks/42 §3a), so the name must stay "splash".
+#   2  mrg5root  the rest ext4 "MRG5EMMC": the system (unsquashfs of the live image)
+#
+# EMMC + internal HDD (edition=emmc-hdd) also erases the internal SATA HDD: one partition, ext4
+# "MRG5HDD", with the folders mrg5-overlay-init uses (upper, work, DATA, docker, containerd).
+#
+# It refuses a device that is not this box's eMMC and an HDD that holds an MRG5 HDD system (a
+# partition labelled MRG5ROOT). Whatever the eMMC holds, it is replaced.
+set -u
+MEDIUM=/live/medium/Testapp6
+IMG=$MEDIUM/live/rootfs.sqfs
+DEV=/dev/mmcblk0
+TTY=/dev/tty1
+MNT=/run/mrg5-emmc
+LOG=/run/mrg5-emmc-install.log
+
+exec 3>>"$LOG"
+log() { echo "$(date +%T) $*" >&3; }
+screen() {
+    # a clear screen with large text; every argument is one line
+    { printf '\033[2J\033[H\n\n'; for l in "$@"; do printf '   %s\n\n' "$l"; done; } > "$TTY"
+}
+led() { [ -x /usr/local/bin/microp ] && /usr/local/bin/microp set middle "$1" "$2" >/dev/null 2>&1; }
+fail() {
+    log "FAILED: $*"
+    led green off; led red on
+    screen "Installation FAILED:" "$*" "" "Nothing has been started from the internal memory." \
+           "Unplug the power to switch off. Log: $LOG"
+    sleep infinity
+}
+
+systemctl stop mrg5-leds.service 2>/dev/null
+chvt 1 2>/dev/null
+setfont /usr/share/consolefonts/Uni3-TerminusBold32x16.psf.gz -C "$TTY" 2>/dev/null
+printf '\033[?25l' > "$TTY"                       # no cursor
+led red off; led green flash
+. /etc/mrg5-release 2>/dev/null
+new_version=${version:-unknown}
+EDITION=${edition:-emmc}
+log "release $new_version ($EDITION), image $IMG"
+
+# ---------------------------------------------------------------- the target
+[ -b "$DEV" ] || fail "no internal memory ($DEV) found"
+[ "$(cat /sys/block/mmcblk0/device/type 2>/dev/null)" = MMC ] || fail "$DEV is not an eMMC"
+size=$(blockdev --getsize64 "$DEV")
+[ "$size" -ge 4000000000 ] && [ "$size" -le 64000000000 ] || fail "$DEV has an unexpected size ($size bytes)"
+lsblk -rno MOUNTPOINT "$DEV" | grep -q . && fail "a partition of $DEV is in use"
+[ -f "$IMG" ] || fail "the system image is missing on the stick ($IMG)"
+
+# EMMC + internal HDD: the internal SATA disk
+HDD=""
+if [ "$EDITION" = emmc-hdd ]; then
+    # the disk behind the SATA controller (libata: an "ata" path in sysfs), as mrg5-storage finds
+    # it; lsblk's TRAN is empty for this controller
+    for i in $(seq 1 60); do
+        for b in /sys/block/sd*; do
+            case "$(readlink -f "$b")" in */ata[0-9]*) HDD=/dev/${b##*/}; break ;; esac
+        done
+        [ -n "$HDD" ] && break
+        sleep 1
+    done
+    if [ -z "$HDD" ]; then
+        log "disks seen: $(lsblk -dnpo NAME,SIZE,MODEL | tr '\n' ';')"
+        fail "no internal HDD found (this release needs one; use EMMC Only boot without one)." \
+             "Disks seen: $(lsblk -dnpo NAME,SIZE | xargs)"
+    fi
+    hsize=$(blockdev --getsize64 "$HDD")
+    [ "$hsize" -ge 32000000000 ] || fail "the internal HDD is too small ($hsize bytes)"
+    lsblk -rno MOUNTPOINT "$HDD" | grep -q . && fail "a partition of the internal HDD ($HDD) is in use"
+    # never an HDD with an MRG5 HDD system on it (checks/41)
+    lsblk -rno LABEL "$HDD" | grep -qx MRG5ROOT &&
+        fail "the internal HDD holds an MRG5 HDD system (MRG5ROOT); it is not erased. Use another HDD."
+    HDD_NAME="$(lsblk -dno MODEL "$HDD" | xargs), $((hsize / 1000000000)) GB"
+    log "internal HDD $HDD ($HDD_NAME)"
+fi
+
+# It always installs, whatever the eMMC holds (owner, 2026-10-02): the original software, an
+# older MRG5 system or this same release. The countdown is the chance to cancel.
+mkdir -p "$MNT/root" "$MNT/boot"
+
+for i in $(seq 30 -1 1); do
+    if [ -n "$HDD" ]; then
+        screen "MRG5 installer, release $new_version (EMMC + internal HDD)" "" \
+               "The internal memory (eMMC) will be ERASED and MRG5 installed on it." \
+               "Everything on it now is lost: the original MagentaTV software or an MRG5 system." \
+               "The internal HDD ($HDD_NAME) will be ERASED too: ALL DATA ON IT WILL BE LOST." "" \
+               "Starting in $i seconds. To cancel, unplug the power now."
+    else
+        screen "MRG5 installer, release $new_version" "" \
+               "The internal memory (eMMC) will be ERASED and MRG5 installed on it." \
+               "Everything on it now is lost: the original MagentaTV software or an MRG5 system." "" \
+               "Starting in $i seconds. To cancel, unplug the power now."
+    fi
+    sleep 1
+done
+
+# ---------------------------------------------------------------- partitions
+screen "Installing MRG5 $new_version ..." "" "Preparing the internal memory." "Do not unplug the power."
+log "partitioning $DEV"
+wipefs -a -q "$DEV" || fail "wipefs failed"
+sfdisk -q --wipe always --wipe-partitions always "$DEV" <<EOF || fail "partitioning failed"
+label: gpt
+start=2048, size=256MiB, type=EBD0A0A2-B9E5-4433-87C0-68B6B72699C7, name=splash
+type=0FC63DAF-8483-4772-8E79-3D69D8477DE4, name=mrg5root
+EOF
+blockdev --rereadpt "$DEV" 2>/dev/null || partx -u "$DEV" 2>/dev/null || true
+udevadm settle
+P1=${DEV}p1
+P2=${DEV}p2
+[ -b "$P1" ] && [ -b "$P2" ] || fail "the new partitions did not appear"
+mkfs.vfat -F 32 -n MRG5-EMMC "$P1" >&3 2>&1 || fail "formatting the boot partition failed"
+mkfs.ext4 -F -q -L MRG5EMMC -m 1 "$P2" >&3 2>&1 || fail "formatting the system partition failed"
+
+# ---------------------------------------------------------------- the system
+screen "Installing MRG5 $new_version ..." "" "Copying the system (about 10 minutes)." "Do not unplug the power."
+log "unsquashfs to $P2"
+mount -o noatime "$P2" "$MNT/root" || fail "mounting the system partition failed"
+unsquashfs -f -q -n -d "$MNT/root" "$IMG" >&3 2>&1 || fail "copying the system failed"
+[ -x "$MNT/root/lib/systemd/systemd" ] && [ -e "$MNT/root/mrg5/installed" ] || fail "the copied system is incomplete"
+sync
+
+# ---------------------------------------------------------------- the HDD
+if [ -n "$HDD" ]; then
+    screen "Installing MRG5 $new_version ..." "" "Preparing the internal HDD." "Do not unplug the power."
+    log "partitioning $HDD"
+    wipefs -a -q $(lsblk -rnpo NAME "$HDD" | tac) || fail "wipefs on the HDD failed"
+    printf 'label: gpt\nstart=2048, type=0FC63DAF-8483-4772-8E79-3D69D8477DE4, name=mrg5hdd\n' |
+        sfdisk -q --wipe always --wipe-partitions always "$HDD" || fail "partitioning the HDD failed"
+    blockdev --rereadpt "$HDD" 2>/dev/null || partx -u "$HDD" 2>/dev/null || true
+    udevadm settle
+    H1=${HDD}1
+    [ -b "$H1" ] || fail "the HDD partition did not appear"
+    mkfs.ext4 -F -q -L MRG5HDD -m 1 "$H1" >&3 2>&1 || fail "formatting the HDD failed"
+    mkdir -p "$MNT/hdd"
+    mount -o noatime "$H1" "$MNT/hdd" || fail "mounting the HDD failed"
+    mkdir -p "$MNT/hdd/upper" "$MNT/hdd/work" "$MNT/hdd/DATA" "$MNT/hdd/docker" "$MNT/hdd/containerd"
+    cp -a "$MNT/root/DATA/." "$MNT/hdd/DATA/" && touch "$MNT/hdd/.data-seeded"
+    sync
+    umount "$MNT/hdd"
+    e2fsck -fn "$H1" >&3 2>&1 || fail "the HDD file system is damaged"
+fi
+
+# ---------------------------------------------------------------- boot files
+screen "Installing MRG5 $new_version ..." "" "Writing the boot files." "Do not unplug the power."
+log "boot files to $P1"
+mount "$P1" "$MNT/boot" || fail "mounting the boot partition failed"
+mkdir -p "$MNT/boot/Testapp6/BOOT"
+. "$MNT/root/etc/mrg5-release"
+cp "$MEDIUM/BOOT/$kernel" "$MEDIUM/BOOT/$dtb" "$MEDIUM/emmc/boot.ini" "$MEDIUM/emmc/startup.ini" \
+   "$MNT/boot/Testapp6/BOOT/" || fail "copying the boot files failed"
+sync
+echo 3 > /proc/sys/vm/drop_caches
+for f in "$kernel" "$dtb"; do
+    a=$(sha256sum < "$MEDIUM/BOOT/$f" | cut -d' ' -f1)
+    b=$(sha256sum < "$MNT/boot/Testapp6/BOOT/$f" | cut -d' ' -f1)
+    [ "$a" = "$b" ] || fail "$f was not written correctly"
+done
+umount "$MNT/boot"
+umount "$MNT/root"
+fsck.vfat -n "$P1" >&3 2>&1 || fail "the boot partition is damaged"
+e2fsck -fn "$P2" >&3 2>&1 || fail "the system partition is damaged"
+log "done"
+
+led green on
+screen "MRG5 $new_version is installed." "" \
+       "Unplug the power, remove the USB stick," "then plug the power back in." "" \
+       "The box then starts from its internal memory. The first start shows" \
+       "the remote pairing screen."
+sleep infinity

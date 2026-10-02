@@ -1,0 +1,17 @@
+# /etc/systemd/system/mrg5-emmc-install.service (checks/54): the eMMC installer. Only in the
+# live system from the release stick (initramfs live mode mounts /live/medium); on the
+# installed system the condition is false and it never runs.
+[Unit]
+Description=MRG5 installer: install the system onto the eMMC
+ConditionPathIsMountPoint=/live/medium
+After=systemd-udev-settle.service local-fs.target
+Wants=systemd-udev-settle.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/sbin/mrg5-emmc-install
+StandardInput=null
+StandardOutput=journal
+
+[Install]
+WantedBy=multi-user.target

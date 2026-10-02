@@ -1,0 +1,18 @@
+# Light desktop for the MRG5, installed on top of the minimal X11 stack
+# (work/desktop/x11-core.pkglist).
+#
+# Xfce 4.18 on Debian 12 armhf: a full session with panel, desktop icons, file
+# manager and terminal.  It is started by hand with /root/start-desktop.sh; no
+# display manager, nothing enabled at boot.
+xfce4
+xfce4-terminal
+xfwm4
+xfce4-panel
+xfdesktop4
+xfce4-session
+xfce4-settings
+xfconf
+thunar
+mousepad
+xfce4-taskmanager
+dbus-x11

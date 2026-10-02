@@ -1,0 +1,136 @@
+#!/bin/sh
+# bios-check - show which BIOS/firmware files the installed emulator cores expect,
+# which of them are present in the system directory, and whether the file that is
+# present is the dump the core asks for (MD5 compared with the documented hash).
+#
+#   bios-check              summary per system (only the files that matter)
+#   bios-check --all        every expected file, including the SNES coprocessor ROMs
+#   bios-check psx          only the files one core/system uses
+#   bios-check scph5501.bin detail for one file name
+#
+# The list comes from /usr/local/share/mrg5-games/bios-manifest.txt, which is derived
+# from this box's own /usr/share/libretro/info/ files and from the libretro core
+# documentation. Nothing listed is required for a core to start: every core here has
+# a built-in fallback, so an empty BIOS directory is a valid state, not an error.
+# The files themselves are copyrighted and must come from your own hardware.
+
+BIOSDIR=${BIOSDIR:-/DATA/Games/bios}
+MANIFEST=${MANIFEST:-/usr/local/share/mrg5-games/bios-manifest.txt}
+
+if [ ! -f "$MANIFEST" ]; then
+	echo "bios-check: no manifest at $MANIFEST" >&2
+	exit 2
+fi
+
+MODE=summary
+SEL=
+case "${1:-}" in
+	--help|-h)
+		sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'
+		exit 0 ;;
+	--all|-a) MODE=all ;;
+	"") : ;;
+	*) MODE=one; SEL=$1 ;;
+esac
+
+FOUND=0; MISSING=0; WRONG=0; SHOWN=0; SEEN=""
+SUMMARY=no
+[ "$MODE" = summary ] && SUMMARY=yes
+
+# Does this row belong to the section asked for?
+wanted() {
+	# $1 = comma separated core list
+	if [ "$MODE" = all ]; then return 0; fi
+	case ",$1," in *",$SEL,"*) return 0 ;; esac
+	return 1
+}
+
+emit() {
+	# $1 file  $2 md5  $3 need  $4 cores  $5 desc  $6 hash source
+	f=$1; want=$2; need=$3; cores=$4; desc=$5; src=$6
+	if [ -f "$BIOSDIR/$f" ]; then
+		got=$(md5sum "$BIOSDIR/$f" 2>/dev/null | cut -d' ' -f1)
+		sz=$(wc -c <"$BIOSDIR/$f" 2>/dev/null)
+		if [ "$want" = "-" ]; then
+			printf '  OK      %-20s %9s B  md5 %s\n' "$f" "$sz" "$got"
+		elif [ "$got" = "$want" ]; then
+			printf '  OK      %-20s %9s B  md5 %s  (correct dump)\n' "$f" "$sz" "$got"
+		else
+			printf '  WRONG   %-20s %9s B  md5 %s\n' "$f" "$sz" "$got"
+			printf '          the core documents %s  [hash from %s]\n' "$want" "$src"
+			WRONG=$((WRONG+1))
+		fi
+		printf '          %s (%s) [%s]\n' "$desc" "$need" "$cores"
+		FOUND=$((FOUND+1))
+	else
+		printf '  missing %-20s %s (%s) [%s]\n' "$f" "$desc" "$need" "$cores"
+		MISSING=$((MISSING+1))
+	fi
+	SHOWN=$((SHOWN+1))
+}
+
+row() {
+	# $1 file  $2 md5  $3 need  $4 cores  $5 desc  $6 src
+	if [ "$MODE" = one ]; then
+		if [ "$1" = "$SEL" ]; then emit "$@"; return; fi
+		wanted "$4" || return 0
+		emit "$@"
+		return
+	fi
+	wanted "$4" || return 0
+	# A file shared by two systems (gb_bios.bin serves gb and gbc) would otherwise be
+	# counted, and printed, once per system in the summary.
+	case " $SEEN " in *" $1 "*) return 0 ;; esac
+	SEEN="$SEEN $1"
+	if [ "$SUMMARY" = yes ] && [ "$3" = optional ] && [ ! -f "$BIOSDIR/$1" ]; then
+		# optional and absent: noise in the summary, but still counted
+		MISSING=$((MISSING+1))
+		return
+	fi
+	emit "$@"
+}
+
+echo "BIOS directory: $BIOSDIR"
+[ -d "$BIOSDIR" ] || echo "  (does not exist)"
+
+if [ "$MODE" = summary ]; then
+	for sys in psx megacd mastersystem gamegear megadrive pce gb gbc gba nes snes; do
+		SEL=$sys
+		# The SNES group is 17 near-identical coprocessor ROMs that the core HLEs
+		# anyway; count them here and leave the listing to `bios-check snes`.
+		if [ "$sys" = snes ]; then
+			n=0; p=0
+			while IFS='|' read -r f m nd c d s; do
+				case "$f" in ''|'#'*) continue ;; esac
+				case ",$c," in
+					*",snes,"*)
+						n=$((n+1))
+						if [ -f "$BIOSDIR/$f" ]; then p=$((p+1)); FOUND=$((FOUND+1))
+						else MISSING=$((MISSING+1)); fi ;;
+				esac
+			done <"$MANIFEST"
+			echo "--- snes"
+			echo "  $p of $n coprocessor ROMs present (bios-check snes lists them; the core HLEs them)"
+			continue
+		fi
+		echo "--- $sys"
+		before=$SHOWN
+		# read from the file, not a pipe, so the counters survive
+		while IFS='|' read -r f m n c d s; do
+			case "$f" in ''|'#'*) continue ;; esac
+			row "$f" "$m" "$n" "$c" "$d" "$s"
+		done <"$MANIFEST"
+		[ "$SHOWN" = "$before" ] && echo "  (no file of this system is present)"
+	done
+else
+	[ "$MODE" = one ] && echo "--- $SEL"
+	while IFS='|' read -r f m n c d s; do
+		case "$f" in ''|'#'*) continue ;; esac
+		row "$f" "$m" "$n" "$c" "$d" "$s"
+	done <"$MANIFEST"
+fi
+
+echo
+echo "$FOUND present, $MISSING not present, $WRONG not the documented dump."
+echo "None of them is required for a core to start - the PS1 and the CD-based Sega and"
+echo "PC Engine cores fall back to a built-in BIOS. Nintendo 64 needs no BIOS at all."

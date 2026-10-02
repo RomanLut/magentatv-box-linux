@@ -1,0 +1,5 @@
+# What make-release.sh leaves out for EMMC Only (EDITION=emmc), in addition to
+# release-exclude.txt: CasaOS, which that release does not have (checks/54). Same pattern rules.
+./var/lib/casaos
+./etc/casaos
+./usr/share/casaos

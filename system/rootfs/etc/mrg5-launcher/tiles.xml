@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- SPDX-License-Identifier: GPL-3.0-or-later -->
+<!-- Copyright (C) 2026 Roman Lut -->
+<!--
+  MRG5 TV launcher tiles: /etc/mrg5-launcher/tiles.xml (checks/41, "TV launcher").
+  Changes take effect when the launcher starts again (systemctl restart mrg5-launcher, or a reboot).
+
+  <launcher>   title       heading at the top left
+               background  picture behind everything (absolute path)
+               icons       folder for icon names without a path (default: the launcher's own icons)
+               storage     path whose free space the top bar shows
+  <tile>       title       name under the icon
+               icon        file name in the icon folder, or an absolute path (PNG or SVG);
+                           left out: the generic application icon (application.svg)
+               iconScale   icon size factor (default 1; the icon is 150 px)
+               color       tile colour; the tile shades from lighter (top) to darker (bottom)
+               exec        command line (run with /bin/sh as root, DISPLAY set). The launcher hides
+                           when the program's window appears and comes back when the program ends.
+               action      instead of exec: desktop (the Xfce desktop), console (text console),
+                           reboot. The launcher comes back at the next boot.
+  Tiles appear in this order; more than fit on the screen scroll.
+-->
+<launcher title="Main Menu"
+          background="/usr/local/share/backgrounds/mrg5-green-dark.png"
+          storage="/DATA">
+  <tile title="YouTube"      icon="youtube.svg" color="#7d1616"
+        exec="/usr/local/bin/youtube-tv"/>
+  <tile title="Kodi"         icon="/usr/share/icons/hicolor/256x256/apps/kodi.png" color="#0f5566"
+        exec="/usr/local/bin/kodi"/>
+  <tile title="RetroArch"    icon="/usr/share/icons/hicolor/scalable/apps/retroarch.svg" color="#3e2677"
+        exec="/usr/local/bin/retroarch-menu"/>
+  <tile title="Chromium"     icon="/opt/rpi-chromium/usr/share/icons/hicolor/256x256/apps/chromium.png" color="#1a4aa3"
+        exec="/usr/local/bin/chromium --start-maximized"/>
+  <tile title="CasaOS"       icon="/usr/local/share/icons/casaos.png" color="#2d5d7a"
+        exec="/usr/local/bin/chromium --start-maximized --app=http://localhost/"/>
+  <tile title="XFCE Desktop" icon="/usr/share/icons/hicolor/scalable/apps/xfce4-logo.svg" color="#3c8f2c"
+        action="desktop"/>
+  <tile title="Linux Shell"  icon="terminal.svg" color="#1d2b23"
+        action="console"/>
+  <tile title="Quake"        icon="/usr/share/icons/hicolor/scalable/apps/quake.svg" color="#6e3a17"
+        exec="/usr/local/bin/quake"/>
+  <tile title="Luanti"       icon="/usr/local/share/icons/hicolor/scalable/apps/luanti.svg" color="#2f6b3a"
+        exec="/usr/local/bin/luanti-tv"/>
+</launcher>

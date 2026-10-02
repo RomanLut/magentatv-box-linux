@@ -1,0 +1,150 @@
+#!/usr/bin/env python3
+"""Talk to the front-panel microcontroller ("microP") the way BLS1 does (checks/25).
+
+    microp.py version                   '#', '=' -> major, '=' -> minor (BLS1's query)
+    microp.py led <id> <mode>           '-E' <id> <mode>: the LED command (BLS1 "LED <id><mode>")
+    microp.py lum <percent> [<id> ...]  '-D' <id> <percent*255/100>: brightness (BLS1
+                                        "LED_luminosity"); without ids: all six
+    microp.py set <left|middle> <green|red|yellow> <on|off|flash> [<led> <colour> <mode> ...]
+    microp.py off                       every LED off
+
+Every run holds an exclusive lock (/run/microp.lock) while it talks to the controller, so
+the LED service, the launcher and a shell never interleave their bytes (mixed bytes could
+form another command). Only ids 0-5 and modes 1-3 are accepted.
+
+LED map, established on the box 2026-09-29 (seen from the front; work/led/led-map-20260929.txt):
+
+    id   LED      colour        modes: 1 on, 2 off, 3 flash
+    0    middle   green         BLS1 "LED_flash" = 0 and 3 flashing ("Green_LED_1st/2st")
+    1    middle   red
+    2    middle   yellow        (the controller mixes it; the LEDs are red/green)
+    3    left     green
+    4    left     red
+    5    left     yellow
+
+Colours of one LED add up (red + green = orange). Brightness: '-D' 0 dims the middle LED;
+nothing dims the left one ('-D' 1-5 had no visible effect, tested lit and unlit). The
+right LED did not react to ids 0-5, the only ones BLS1 uses; other ids are not sent.
+
+The microP is on the SoC's third UART, 0xf040e000 = /dev/ttyS2, 38400 8N1 (BLS1's UART
+routine forces 38400 for that port). Bytes go out one at a time with 4 ms gaps, then the
+reply is read and printed, as BLS1 does (it reads up to 11 bytes and ignores them).
+
+Only these commands, taken from BLS1's own code (NOR 0x90cc0 version, 0x911bc-0x91574
+LED table, 0x915e8 brightness), are sent. The microP also has a firmware-update mode and
+likely switches power; nothing else is ever sent to it.
+
+LED commands BLS1 contains: (1,1) (1,2) (2,1) (2,2) (3,1) (3,2) (4,1) (4,2) (5,1) (5,2)
+(0,3) (1,3) (3,3). Every command is answered with one byte, '#' (0x23).
+"""
+import fcntl
+import os
+import sys
+import termios
+import time
+
+DEV = "/dev/ttyS2"
+LOCK = "/run/microp.lock"
+IDS = {("middle", "green"): 0, ("middle", "red"): 1, ("middle", "yellow"): 2,
+       ("left", "green"): 3, ("left", "red"): 4, ("left", "yellow"): 5}
+MODES = {"on": 1, "off": 2, "flash": 3}
+
+
+def open_port():
+    fd = os.open(DEV, os.O_RDWR | os.O_NOCTTY | os.O_NONBLOCK)
+    a = termios.tcgetattr(fd)
+    a[0] = 0                                          # iflag: raw
+    a[1] = 0                                          # oflag
+    a[2] = termios.CS8 | termios.CREAD | termios.CLOCAL   # 8N1, no flow control
+    a[3] = 0                                          # lflag: raw
+    a[4] = a[5] = termios.B38400
+    termios.tcsetattr(fd, termios.TCSANOW, a)
+    termios.tcflush(fd, termios.TCIOFLUSH)
+    return fd
+
+
+def read_for(fd, seconds):
+    out = b""
+    end = time.monotonic() + seconds
+    while time.monotonic() < end:
+        try:
+            out += os.read(fd, 64)
+        except BlockingIOError:
+            time.sleep(0.001)
+    return out
+
+
+def send(fd, data, gap=0.004):
+    for b in data:
+        os.write(fd, bytes([b]))
+        termios.tcdrain(fd)
+        time.sleep(gap)
+
+
+def command(fd, frame):
+    """One LED or brightness command; the controller answers '#'."""
+    send(fd, frame)
+    reply = read_for(fd, 0.05)
+    print("sent", frame.hex(" "), "reply", reply.hex(" ") or "-")
+
+
+def led_frame(i, mode):
+    if not (0 <= i <= 5 and 1 <= mode <= 3):
+        sys.exit("only ids 0-5 and modes 1-3 (BLS1's own) are sent")
+    return b"-E" + bytes([i, mode])
+
+
+def parse_set(args):
+    frames = []
+    if not args or len(args) % 3:
+        sys.exit(__doc__)
+    for k in range(0, len(args), 3):
+        led, colour, mode = args[k:k + 3]
+        if (led, colour) not in IDS or mode not in MODES:
+            sys.exit(__doc__)
+        frames.append(led_frame(IDS[(led, colour)], MODES[mode]))
+    return frames
+
+
+def main():
+    if len(sys.argv) < 2:
+        sys.exit(__doc__)
+    cmd, args = sys.argv[1], sys.argv[2:]
+    if cmd == "led" and len(args) == 2:
+        frames = [led_frame(int(args[0]), int(args[1]))]
+    elif cmd == "lum" and args:
+        level = max(0, min(100, int(args[0]))) * 255 // 100
+        ids = [int(a) for a in args[1:]] or list(range(6))
+        if any(not 0 <= i <= 5 for i in ids):
+            sys.exit("only ids 0-5")
+        frames = [b"-D" + bytes([i, level]) for i in ids]
+    elif cmd == "set":
+        frames = parse_set(args)
+    elif cmd == "off" and not args:
+        frames = [led_frame(i, 2) for i in range(6)]
+    elif cmd == "version" and not args:
+        frames = None
+    else:
+        sys.exit(__doc__)
+    with open(LOCK, "w") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        fd = open_port()
+        try:
+            if frames is None:
+                send(fd, b"#", 0.002)
+                send(fd, b"=", 0.002)
+                major = read_for(fd, 0.05)
+                send(fd, b"=", 0.002)
+                minor = read_for(fd, 0.05)
+                print("reply to '#','=':", major.hex(" ") or "-", " to '=':", minor.hex(" ") or "-")
+                if major and minor:
+                    print("microP firmware version %d.%d" % (major[-1], minor[-1]))
+            else:
+                for f in frames:
+                    command(fd, f)
+        finally:
+            os.close(fd)
+
+
+if __name__ == "__main__":
+    main()

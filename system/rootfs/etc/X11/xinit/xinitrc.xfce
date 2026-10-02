@@ -1,0 +1,6 @@
+#!/bin/sh
+# X session for the MRG5: Xfce 4.  Started by /root/start-desktop.sh through xinit
+# (no display manager).  Only one X client should be started here.
+xrdb -merge /etc/X11/Xresources/x11-common 2>/dev/null
+xset s off -dpms 2>/dev/null
+exec dbus-launch --exit-with-session xfce4-session

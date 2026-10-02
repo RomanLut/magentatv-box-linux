@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64">
+  <!-- SPDX-License-Identifier: GPL-3.0-or-later; Copyright (C) 2026 Roman Lut -->
+  <!-- status bar: storage (a disk stack) -->
+  <g fill="#ffffff">
+    <ellipse cx="32" cy="12" rx="24" ry="8"/>
+    <path d="M8 18 C8 29 56 29 56 18 V30 C56 41 8 41 8 30 Z"/>
+    <path d="M8 36 C8 47 56 47 56 36 V50 C56 61 8 61 8 50 Z"/>
+  </g>
+</svg>

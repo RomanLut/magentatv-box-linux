@@ -1,0 +1,42 @@
+#!/bin/sh
+# /usr/local/bin/chromium-single [PROFILE] (checks/53 section 9 item 13): one
+# Chromium on the desktop at a time. With a second Chromium instance running
+# (another profile or build, as the user "browser" too), YouTube's full screen
+# ("f") is entered and dropped again at once; with one instance it holds.
+#
+# Ends every Chromium browser process of the user "browser" whose profile is
+# not PROFILE (no PROFILE: all of them), and prints "pid profile" for each.
+# SIGTERM is Chromium's own clean shutdown (shutdown_signal_handlers_posix.cc):
+# it saves the session and marks the exit clean, so the next start shows no
+# "restore pages" bubble. What still runs after 15 s gets SIGKILL.
+#
+# A second start on the same profile needs nothing from here: Chromium's
+# ProcessSingleton hands it to the running instance as a new window.
+KEEP=${1:-}
+DEF=/home/browser/.config/chromium
+# The browser process rewrites its command line into one string (its process
+# title), so arguments are split at spaces; profile paths have none here.
+list() {
+	for d in /proc/[0-9]*; do
+		[ "$(stat -c %U "$d" 2>/dev/null)" = browser ] || continue
+		c=" $(tr '\0' ' ' < "$d/cmdline" 2>/dev/null) "
+		case "${c# }" in */chromium\ *) ;; *) continue ;; esac
+		case "$c" in *" --type="*) continue ;; esac
+		prof=$(printf '%s\n' "$c" | sed -n 's/.* --user-data-dir=\([^ ]*\) .*/\1/p')
+		[ -n "$prof" ] || prof=$DEF
+		[ "$prof" = "$KEEP" ] && continue
+		echo "${d#/proc/} $prof"
+	done
+}
+L=$(list)
+[ -n "$L" ] || exit 0
+printf '%s\n' "$L"
+for p in $(printf '%s\n' "$L" | cut -d' ' -f1); do kill -TERM "$p" 2>/dev/null; done
+for i in $(seq 1 15); do
+	sleep 1
+	left=
+	for p in $(printf '%s\n' "$L" | cut -d' ' -f1); do [ -d "/proc/$p" ] && left="$left $p"; done
+	[ -n "$left" ] || exit 0
+done
+kill -KILL $left 2>/dev/null
+exit 0

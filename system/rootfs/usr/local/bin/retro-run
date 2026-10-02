@@ -1,0 +1,53 @@
+#!/bin/sh
+# retro-run: start RetroArch with one core. Installed as /usr/local/bin/retro-run
+# with one symlink per system (nes, snes, gb, gba, megadrive, n64, ...); the name
+# it is called by picks the core.
+#
+#   n64 /DATA/Games/n64/game.z64    run that game
+#   n64                             open RetroArch's menu with the core loaded
+#
+# In an X terminal it runs on that display; from ssh or a console it uses the
+# running desktop on :0, or draws straight to KMS when no X server is up.
+# Settings: /usr/local/share/mrg5-games/retroarch-mrg5.cfg (+ -kms.cfg).
+
+SYS=/usr/lib/arm-linux-gnueabihf/libretro
+OWN=/usr/local/lib/libretro
+CFG=/usr/local/share/mrg5-games
+
+case "$(basename "$0")" in
+	nes)              core=$SYS/nestopia_libretro.so ;;
+	snes)             core=$SYS/bsnes_mercury_performance_libretro.so ;;
+	gb|gbc)           core=$SYS/gambatte_libretro.so ;;
+	gba)              core=$SYS/mgba_libretro.so ;;
+	megadrive|genesis|mastersystem|gamegear|megacd)
+	                  core=$OWN/genesis_plus_gx_libretro.so ;;
+	pce)              core=$SYS/mednafen_pce_fast_libretro.so ;;
+	psx)              core=$OWN/pcsx_rearmed_libretro.so ;;
+	# the GLES3 build: the GLES2 one runs the game but hands a black frame
+	# (build-n64-gles3.sh, checks/53 §9 item 13)
+	n64)              core=$OWN/mupen64plus_next_gles3_libretro.so ;;
+	# PPSSPP, built on the box (build-ppsspp.sh): no armhf build exists elsewhere
+	psp)              core=$OWN/ppsspp_libretro.so ;;
+	# cross-built for the box (build-cores.sh); the game is a folder in
+	# /DATA/Games/<name>, started with its main file (doom1.wad, VSWAP.WL1,
+	# baseq2/pak0.pak, *.scummvm, data.zip)
+	doom)             core=$OWN/prboom_libretro.so ;;
+	wolf3d)           core=$OWN/ecwolf_libretro.so ;;
+	quake2)           core=$OWN/vitaquake2_libretro.so ;;
+	scummvm)          core=$OWN/scummvm_libretro.so ;;
+	rick)             core=$OWN/xrick_libretro.so ;;
+	*)                echo "retro-run: call it as nes, snes, gb, gba, megadrive, pce, psx, n64, psp, doom, wolf3d, quake2, scummvm or rick" >&2
+	                  exit 1 ;;
+esac
+[ -f "$core" ] || { echo "retro-run: $(basename "$0") is not installed on this system ($core)" >&2; exit 1; }
+
+append=$CFG/retroarch-mrg5.cfg
+if [ -z "$DISPLAY" ]; then
+	if [ -S /tmp/.X11-unix/X0 ]; then
+		export DISPLAY=:0
+	else
+		append="$append|$CFG/retroarch-mrg5-kms.cfg"
+	fi
+fi
+
+exec retroarch -f --appendconfig "$append" -L "$core" "$@"

@@ -1,0 +1,30 @@
+#!/bin/sh
+# mrg5-macaddr (checks/54, "MAC address"): give eth0 this box's own MAC address, read from its
+# boot flash. The stock firmware writes the address into the device tree when it starts Linux;
+# our boot loads a fixed device tree (dtb-mrg5-release.bin, without local-mac-address), so the
+# GENET driver starts with a random address. The address is in NOR flash0.macadr: from offset
+# 0x0c, 6 bytes (repeated in 8-byte steps); BLS2's diagnosis prints it as MACLAN. Read only.
+# Without a valid address there, eth0 keeps the stable address systemd's 99-default.link
+# derives from the machine-id (MACAddressPolicy=persistent): never another box's.
+# Run by mrg5-macaddr.service before the network starts.
+set -u
+IF=eth0
+mtd=$(awk '$4 == "\"flash0.macadr\"" { sub(":", "", $1); print $1 }' /proc/mtd)
+[ -n "$mtd" ] && [ -c "/dev/${mtd}ro" ] || { echo "no flash0.macadr; $IF keeps its address"; exit 0; }
+mac=$(dd if="/dev/${mtd}ro" bs=1 skip=12 count=6 2>/dev/null | od -An -tx1 | tr -s ' \n' ':' | sed 's/^://; s/:$//')
+case "$mac" in
+    ??:??:??:??:??:??) ;;
+    *) echo "flash0.macadr: no address read; $IF keeps its address"; exit 0 ;;
+esac
+first=$(printf '%d' "0x${mac%%:*}")
+if [ "$mac" = 00:00:00:00:00:00 ] || [ "$mac" = ff:ff:ff:ff:ff:ff ] || [ $((first & 1)) = 1 ]; then
+    echo "flash0.macadr holds no valid address ($mac); $IF keeps its address"
+    exit 0
+fi
+[ "$(cat "/sys/class/net/$IF/address" 2>/dev/null)" = "$mac" ] && { echo "$IF already has $mac"; exit 0; }
+up=0
+ip link show "$IF" | grep -q '<[^>]*UP' && up=1
+[ $up = 1 ] && ip link set dev "$IF" down
+ip link set dev "$IF" address "$mac" && echo "$IF: $mac (from flash0.macadr)"
+[ $up = 1 ] && ip link set dev "$IF" up
+exit 0

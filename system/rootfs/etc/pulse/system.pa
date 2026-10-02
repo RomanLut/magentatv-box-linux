@@ -1,0 +1,21 @@
+#!/usr/bin/pulseaudio -nF
+# System-mode configuration for the MRG5 box: one card, one sink, no autodetection games.
+load-module module-native-protocol-unix auth-anonymous=1
+# keep the sink volume and mute across restarts and reboots (remote volume keys)
+load-module module-device-restore
+# 4 x 2048 bytes = 43 ms of sink buffer (the driver adds 21 ms in its ring); 4 x 8192 made 170 ms
+load-module module-alsa-sink device=hw:MRG5HDMI,0 sink_name=mrg5_hdmi rate=48000 channels=2 format=s16le tsched=0 fragments=4 fragment_size=2048
+load-module module-always-sink
+load-module module-suspend-on-idle timeout=0
+set-default-sink mrg5_hdmi
+# Bluetooth audio (headphones, speakers): registers the A2DP/HFP endpoints with BlueZ, as
+# Debian's default.pa does; without them BlueZ refuses to connect any audio device
+# (br-connection-profile-unavailable). A connected one becomes the default sink and the
+# streams move to it; when it goes, they fall back to the TV.
+.ifexists module-bluetooth-policy.so
+load-module module-bluetooth-policy
+.endif
+.ifexists module-bluetooth-discover.so
+load-module module-bluetooth-discover
+.endif
+load-module module-switch-on-connect

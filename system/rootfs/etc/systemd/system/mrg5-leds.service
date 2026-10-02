@@ -1,0 +1,22 @@
+# /etc/systemd/system/mrg5-leds.service (checks/25, "Front-panel microcontroller"):
+# front LEDs as status lights - left: red without / green with an IPv4 address on eth0;
+# middle: green blinking while booting, steady green once the TV launcher is up (launcher.py).
+# Starts before sysinit.target, as early as the root filesystem allows.
+[Unit]
+Description=MRG5 front LEDs: network and boot status
+DefaultDependencies=no
+After=local-fs.target
+Before=sysinit.target shutdown.target
+Conflicts=shutdown.target
+
+[Service]
+ExecStart=/usr/local/lib/mrg5-leds/mrg5-leds.py eth0
+# The controller keeps its power through a reboot, so its LEDs would still show this
+# system's state while BLS1 starts. Off at shutdown: the next boot shows only BLS1's own
+# LEDs until this service takes over.
+ExecStopPost=/usr/local/bin/microp off
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=sysinit.target

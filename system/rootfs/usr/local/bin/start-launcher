@@ -1,0 +1,39 @@
+#!/bin/bash
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 Roman Lut
+# /usr/local/bin/start-launcher (checks/41, "TV launcher"): start X on the TV with the TV
+# launcher (tiles from /etc/mrg5-launcher/tiles.xml). mrg5-launcher.service runs it at
+# boot; `systemctl restart mrg5-launcher` starts it again. X runs on tty1 with the X config
+# that desktop-accel.sh selected, as the Xfce desktop's start-desktop does.
+#
+# The session has its own D-Bus (dbus-run-session) and runtime folder. root's per-login
+# ones (/run/user/0, its bus) exist only while root is logged in: an SSH logout took the
+# bus away and xfconfd, xfwm4 and xfsettingsd with it.
+set -u
+# an Xfce desktop started by hand (start-desktop over SSH) is outside mrg5-desktop.service,
+# so the unit's Conflicts= does not end it: stop it here
+if pgrep -x xfce4-session >/dev/null 2>&1; then
+	echo "stopping the Xfce desktop"
+	/usr/local/bin/stop-desktop >/dev/null
+fi
+if pgrep -x Xorg >/dev/null 2>&1; then
+	echo "X is already running (systemctl stop mrg5-launcher first)"
+	exit 0
+fi
+systemctl stop getty@tty1 2>/dev/null || true
+
+export XDG_RUNTIME_DIR=/run/mrg5-launcher
+mkdir -p "$XDG_RUNTIME_DIR"
+chmod 700 "$XDG_RUNTIME_DIR"
+unset DBUS_SESSION_BUS_ADDRESS
+
+cd /root
+# the console login comes back if the session ends by itself
+setsid nohup bash -c \
+	'xinit /usr/bin/dbus-run-session /usr/local/lib/mrg5-launcher/session -- /usr/bin/Xorg :0 vt1 -nolisten tcp;
+	 systemctl start getty@tty1' </dev/null &
+for i in $(seq 1 30); do
+	sleep 1
+	pgrep -x Xorg >/dev/null && break
+done
+pgrep -x Xorg >/dev/null && echo "launcher session started" || { echo "X did not start"; exit 1; }

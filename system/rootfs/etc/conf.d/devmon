@@ -1,0 +1,1 @@
+ARGS="--mount-options nosuid,nodev,noatime --ignore-label EFI"

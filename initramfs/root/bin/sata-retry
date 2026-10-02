@@ -1,0 +1,188 @@
+#!/bin/sh
+# sata-retry - keep trying the SATA link until a disk answers, then let libata
+# enumerate it.
+#
+# WHY THIS EXISTS.  Both bootloader stages probe SATA exactly once and give up:
+# BOLT prints "Spin up fail. No disk?" and then deletes sata@f0b12000 and
+# sata_phy@f0b10100 from the device tree it hands Linux.  Our kernel does not
+# depend on that verdict - brcm-ahci and phy-brcm-sata register from board
+# fallbacks whether or not the DT node survived - so the controller is always up
+# and the link can simply be retried.
+#
+# DELIBERATELY NO DRIVE IDENTIFICATION.  This looks only at the PHY detect field
+# and at whether libata enumerated anything.  It never reads a model, serial or
+# firmware revision, so it cannot prefer or reject any particular disk - unlike
+# the vendor stack, which whitelists Telekom drives.  Any SATA disk that answers
+# is accepted.
+#
+# HARD-WON RULE: NEVER REBIND WHILE A DISK IS ATTACHED.  Unbinding brcm-ahci
+# with a healthy disk present makes libata issue "Synchronizing SCSI cache" and
+# "Stopping disk" - it spins the drive down.  The following softreset then fails
+# with "device not ready" / "1st FIS failed" and libata disables the device, so
+# the rebind destroys exactly the thing it was meant to bring up.  This happened
+# on 2026-09-15 to a disk that had enumerated perfectly.  A rebind is only ever
+# correct when the link is up AND libata has nothing.
+#
+# Usage:
+#   sata-retry status          decode the port registers once
+#   sata-retry watch [secs]    poll the link, report changes (default 120 s)
+#   sata-retry up [tries]      retry until a disk appears (default 20)
+#   sata-retry supervise       poll forever; enumerate if a disk turns up
+
+PORT_SSTS=f0b12128
+PORT_SCTL=f0b1212c
+PORT_SERR=f0b12130
+PORT_CMD=f0b12118
+DRV=/sys/bus/platform/drivers/brcm-ahci
+DEV=brcm-ahci.7268
+
+# Register access uses `busybox devmem`, which is compiled into the initramfs
+# busybox.  /bin holds only a handful of applet copies, but this shell is built
+# with standalone-applet support, so every compiled applet is callable and no
+# extra ARM binary has to be shipped.
+peek() {   # peek <hexaddr> -> 8 hex digits, or empty on bus error
+    v=$(busybox devmem "0x$1" 32 2>/dev/null) || return 1
+    v=${v#0x}
+    [ -n "$v" ] && echo "$v"
+}
+
+poke() {   # poke <hexaddr> <hexvalue>
+    busybox devmem "0x$1" 32 "0x$2" >/dev/null 2>&1
+}
+
+det() {    # low nibble of SSTS: 0 = nothing, 1 = present/no comm, 3 = ready
+    s=$(peek $PORT_SSTS)
+    [ -n "$s" ] || { echo "-"; return; }
+    printf '%d\n' $((0x$s & 0xf))
+}
+
+# Is a disk ALREADY attached behind this controller?
+#
+# This must NOT use /sys/class/ata_device: libata creates dev1.0 for the port
+# whether or not anything answers.  Ask which port each block device hangs off
+# instead: a SATA disk's path runs through brcm-ahci's port, .../ata1/host<N>/...
+# The SCSI host NUMBER is not fixed.  It is host0 only when the SATA controller
+# registers before USB storage; when the USB stick comes first, brcm-ahci is host1
+# (2026-09-28: "scsi host0: usb-storage", "scsi host1: brcm-ahci"), and a test for
+# host0 found "no disk", rebound under the working disk and cost about a minute
+# of resets on every such boot.
+sata_disk_present() {
+    for d in /sys/block/sd*; do
+        [ -e "$d" ] || continue
+        case "$(readlink -f "$d" 2>/dev/null)" in
+            */ata1/host[0-9]*) return 0 ;;
+        esac
+    done
+    return 1
+}
+
+disks() {
+    n=0
+    for d in /sys/block/sd*; do
+        [ -e "$d" ] || continue
+        case "$(readlink -f "$d" 2>/dev/null)" in */ata1/host[0-9]*) n=$((n + 1)) ;; esac
+    done
+    echo $n
+}
+
+decode() {
+    ssts=$(peek $PORT_SSTS); sctl=$(peek $PORT_SCTL)
+    serr=$(peek $PORT_SERR); cmd=$(peek $PORT_CMD)
+    if [ -z "$ssts" ]; then
+        echo "SATA registers unreadable (bus error) - the block is unclocked."
+        echo "That happens when the bootloader stripped the node AND no driver"
+        echo "fallback registered. Check dmesg for brcm-ahci."
+        return 1
+    fi
+    d=$((0x$ssts & 0xf)); sp=$(((0x$ssts >> 4) & 0xf))
+    echo "SSTS=$ssts  DET=$d  SPD=$sp     SCTL=$sctl  SERR=$serr  CMD=$cmd"
+    case $d in
+        0) echo "  DET=0: PHY sees no device on the wire." ;;
+        1) echo "  DET=1: device present but no communication - link training fails." ;;
+        3) echo "  DET=3: device present and communicating." ;;
+        *) echo "  DET=$d: unexpected." ;;
+    esac
+    echo "  sata disks attached: $(disks)"
+}
+
+comreset() {
+    # SCTL DET=1 requests COMRESET; clearing it lets the link train again.
+    old=$(peek $PORT_SCTL); [ -n "$old" ] || return 1
+    base=$((0x$old & 0xfffffff0))
+    poke $PORT_SCTL $(printf '%x' $((base | 1)))
+    sleep 1
+    poke $PORT_SCTL $(printf '%x' $base)
+    sleep 2
+}
+
+rebind() {
+    if sata_disk_present; then
+        echo "refusing to rebind: a disk is attached (see the rule at the top)"
+        return 1
+    fi
+    [ -d "$DRV" ] || return 1
+    echo "$DEV" > "$DRV/unbind" 2>/dev/null
+    sleep 1
+    echo "$DEV" > "$DRV/bind" 2>/dev/null
+    sleep 3
+}
+
+case "${1:-status}" in
+  status)
+      decode
+      echo "block: $(ls /sys/block 2>/dev/null | tr '\n' ' ')"
+      ;;
+  watch)
+      end=$(( $(cut -d. -f1 /proc/uptime) + ${2:-120} ))
+      last=""
+      echo "watching the SATA link; any change in DET is reported"
+      while [ "$(cut -d. -f1 /proc/uptime)" -lt "$end" ]; do
+          d=$(det)
+          if [ "$d" != "$last" ]; then
+              echo "$(cut -d. -f1 /proc/uptime)s: DET=$d  disks=$(disks)"
+              last=$d
+          fi
+          sleep 2
+      done
+      echo "done; final:"; decode
+      ;;
+  up)
+      n=${2:-20}
+      i=0
+      while [ $i -lt $n ]; do
+          i=$((i + 1))
+          d=$(det)
+          echo "try $i/$n: DET=$d  disks=$(disks)"
+          if sata_disk_present; then
+              echo "a disk is attached - nothing to do"
+              echo "block devices: $(ls /sys/block | tr '\n' ' ')"
+              exit 0
+          fi
+          if [ "$d" = "3" ]; then
+              echo "link up but libata has nothing - rebinding"
+              rebind
+              sleep 2
+              echo "block devices: $(ls /sys/block | tr '\n' ' ')"
+              sata_disk_present && exit 0
+          fi
+          comreset
+      done
+      echo "no disk after $n tries"
+      decode
+      exit 1
+      ;;
+  supervise)
+      # Long-running: poll the PHY and enumerate only if a disk turns up that
+      # libata has not noticed.  Cheap - one register read every 30 s - and it
+      # touches nothing while a disk is working.
+      while :; do
+          if ! sata_disk_present && [ "$(det)" = "3" ]; then
+              echo "sata-retry: DET=3 with no disk attached - rebinding"
+              rebind
+              echo "sata-retry: block devices now: $(ls /sys/block | tr '\n' ' ')"
+          fi
+          sleep 30
+      done
+      ;;
+  *) echo "usage: sata-retry status|watch [secs]|up [tries]|supervise"; exit 2 ;;
+esac

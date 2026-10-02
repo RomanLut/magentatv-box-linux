@@ -1,0 +1,30 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 Roman Lut
+"""mrg5-bt-central [hciN]: make the adapter take the central role on incoming connections
+(checks/34, "Bluetooth audio"). Run by udev when the adapter appears
+(/etc/udev/rules.d/90-mrg5-bt-central.rules).
+
+A DualShock 4 connects to the box by itself after power-on, so the box ended up as the pad's
+peripheral while it was central for headphones: two piconets with different masters (a
+scatternet), and the controller had to share its time between them. With the pad sending
+~100 reports/s, A2DP got 225 kbit/s of the 552 the codec needed and the audio skipped.
+With the box central on every link it got 399 (2026-10-03).
+
+This is `hciconfig hci0 lm accept,master`: the HCISETLINKMODE ioctl. The kernel then asks
+for the central role when it accepts a connection (net/bluetooth/hci_event.c,
+hci_conn_request_evt: mask = hdev->link_mode, cp.role = 0x00 "Become central").
+"""
+import fcntl
+import socket
+import struct
+import sys
+
+HCISETLINKMODE = 0x400448e2                   # _IOW('H', 226, int)
+HCI_LM_ACCEPT, HCI_LM_MASTER = 0x8000, 0x0001
+
+dev = int(sys.argv[1].removeprefix("hci")) if len(sys.argv) > 1 else 0
+s = socket.socket(socket.AF_BLUETOOTH, socket.SOCK_RAW, socket.BTPROTO_HCI)
+# struct hci_dev_req { __u16 dev_id; __u32 dev_opt; }
+fcntl.ioctl(s, HCISETLINKMODE, struct.pack("@HI", dev, HCI_LM_ACCEPT | HCI_LM_MASTER))
+print("hci%d: link mode accept,central" % dev)

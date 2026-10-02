@@ -1,0 +1,9 @@
+# Minimal X11 stack for the MRG5 framebuffer console test (Debian 12 armhf).
+# X on /dev/fb0 through the fbdev driver, libinput for USB keyboard/mouse,
+# xinit to start it, one tiny window manager and xterm to have something to see.
+xserver-xorg-core
+xserver-xorg-video-fbdev
+xserver-xorg-input-libinput
+xinit
+xterm
+twm

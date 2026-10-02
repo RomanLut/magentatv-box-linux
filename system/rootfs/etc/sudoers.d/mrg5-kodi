@@ -1,0 +1,3 @@
+# admin may start Kodi as root without a password (checks/41): X needs a VT,
+# which a user may not open; admin already has full sudo with a password.
+admin ALL=(root) NOPASSWD: /usr/local/bin/kodi

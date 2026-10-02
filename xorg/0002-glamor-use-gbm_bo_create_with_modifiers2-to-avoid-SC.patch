@@ -1,0 +1,48 @@
+From f3e38dfb4501cfd56df68d620ee9b1c21e5f3f88 Mon Sep 17 00:00:00 2001
+From: Jose Maria Casanova Crespo <jmcasanova@igalia.com>
+Date: Thu, 9 Mar 2023 11:35:04 +0100
+Subject: [PATCH xserver 2/4] glamor: use gbm_bo_create_with_modifiers2 to
+ avoid SCANOUT flags.
+
+We only apply this patch downstream for Raspberry OS on the arm builds
+so instead of exporting pixmaps needing an SCANOUT usage the
+driver can just decide to use a tiled one. We apply the same for xrandr
+shadow buffers.
+---
+ glamor/glamor_egl.c                              | 5 +++++
+ hw/xfree86/drivers/modesetting/drmmode_display.c | 6 ++++++
+ 2 files changed, 11 insertions(+)
+
+--- a/glamor/glamor_egl.c
++++ b/glamor/glamor_egl.c
+@@ -311,8 +311,13 @@
+ 
+         glamor_get_modifiers(screen, format, &num_modifiers, &modifiers);
+ 
++#if !defined(__arm__) && !defined(__aarch64__)
+         bo = gbm_bo_create_with_modifiers(glamor_egl->gbm, width, height,
+                                           format, modifiers, num_modifiers);
++#else
++        bo = gbm_bo_create_with_modifiers2(glamor_egl->gbm, width, height,
++                                           format, modifiers, num_modifiers, 0);
++#endif
+         if (bo)
+             used_modifiers = TRUE;
+         free(modifiers);
+--- a/hw/xfree86/drivers/modesetting/drmmode_display.c
++++ b/hw/xfree86/drivers/modesetting/drmmode_display.c
+@@ -1109,9 +1109,15 @@
+                                           FALSE, TRUE);
+         if (num_modifiers > 0 &&
+             !(num_modifiers == 1 && modifiers[0] == DRM_FORMAT_MOD_INVALID)) {
++#if !defined(__arm__) && !defined(__aarch64__)
+             bo->gbm = gbm_bo_create_with_modifiers(drmmode->gbm, width, height,
+                                                    format, modifiers,
+                                                    num_modifiers);
++#else
++            bo->gbm = gbm_bo_create_with_modifiers2(drmmode->gbm, width, height,
++                                                    format, modifiers,
++                                                    num_modifiers,0 );
++#endif
+             free(modifiers);
+             if (bo->gbm) {

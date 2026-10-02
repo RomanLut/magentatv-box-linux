@@ -1,0 +1,14 @@
+[Unit]
+Description=V3D 3.3 binner overflow countermeasures (checks/53 §9 item 1)
+# drm/v3d is built in; its knobs are set here once the device exists
+After=systemd-modules-load.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# overflow pools kept ready and handed over in the OUTOMEM interrupt, and a
+# mapped guard area behind each pool for the binner's overrun
+ExecStart=/bin/sh -c 'echo 4 > /sys/module/v3d/parameters/oom_spare; echo 256 > /sys/module/v3d/parameters/oom_guard_kb'
+
+[Install]
+WantedBy=multi-user.target

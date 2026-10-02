@@ -1,0 +1,36 @@
+#!/bin/sh
+# luanti-tv: start Luanti (built by build-luanti.sh) full screen on the TV; the launcher's
+# Luanti tile and the desktop icon run this (checks/41, "Games and emulators").
+# From ssh or a console it uses the running X display :0, as quake does.
+# At the first start it sets full screen and the video driver in ~/.minetest/minetest.conf (Luanti's own settings
+# file, source src/main.cpp and src/porting.cpp); a later change in Luanti's settings menu is kept.
+# Game controllers work through SDL (Luanti 5.17 has no switch for them).
+
+if [ -z "$DISPLAY" ] && [ -S /tmp/.X11-unix/X0 ]; then
+	export DISPLAY=:0
+fi
+
+conf="${HOME:-/root}/.minetest/minetest.conf"
+mkdir -p "${conf%/*}"
+touch "$conf"
+grep -q '^fullscreen *=' "$conf" || echo 'fullscreen = true' >> "$conf"
+# V3D 3.3 offers OpenGL 2.1, no 3.x: the automatic choice tries opengl3 first, fails with
+# GLXBadFBConfig ("Could not create window and context!") and shows nothing; the classic
+# opengl driver starts cleanly (ogles2 is not built into the desktop client)
+grep -q '^video_driver *=' "$conf" || echo 'video_driver = opengl' >> "$conf"
+# The GPU is the limit (99 % busy either way): in a Minetest Game world, 20 frames/s with the
+# defaults at 1920x1080, 43 with the 3D view drawn at half resolution (menus and text stay
+# sharp) and a view range of 100 instead of 190 (2026-09-30)
+grep -q '^undersampling *=' "$conf" || echo 'undersampling = 2' >> "$conf"
+# view range 60, not Luanti's 190 (and not the 100 first chosen for speed): with the GPU's
+# 512 MiB, Your Land ran at ~410 MB with 100 and crashed when new areas loaded (owner's choice
+# 2026-09-30: keep 512 MiB, see less far)
+grep -q '^viewing_range *=' "$conf" || echo 'viewing_range = 60' >> "$conf"
+# GPU memory: every mapblock mesh is its own set of GPU buffers, and the V3D takes them all from
+# its 512 MiB region. On Your Land (a big modded server) the default of 7500 kept mapblocks
+# filled it within a minute of joining (138 -> 536 MB, 17149 buffers) and Mesa crashed on
+# the failed allocation. Luanti keeps what the view range needs regardless of this limit.
+grep -q '^client_mapblock_limit *=' "$conf" || echo 'client_mapblock_limit = 2000' >> "$conf"
+grep -q '^client_unload_unused_data_timeout *=' "$conf" || echo 'client_unload_unused_data_timeout = 120' >> "$conf"
+
+exec /usr/local/bin/luanti "$@"

@@ -1,0 +1,12 @@
+<?xml version="1.0" standalone="yes"?>
+<!-- checks/53: QuakeSpasm cannot read back its swap interval
+     ("vertical sync not supported (SDL_GL_GetSwapInterval failed)"), saves
+     vid_vsync 0 and then asks for no vsync.  vblank_mode 3: always sync to the
+     refresh, interval 1, the application cannot change it. -->
+<driconf>
+  <device>
+    <application name="QuakeSpasm" executable="quake-engine">
+      <option name="vblank_mode" value="3"/>
+    </application>
+  </device>
+</driconf>

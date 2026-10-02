@@ -1,0 +1,26 @@
+#!/bin/sh
+# mrg5-growroot (checks/54, "USB Boot"): at the first start of USB Boot, grow the root partition
+# and its ext4 file system to the end of the USB drive. The image's root partition is only as
+# large as the system plus some room; Raspberry Pi Imager writes it to drives of any size.
+# growpart (cloud-guest-utils, as Debian's cloud images use it) rewrites the partition's end in
+# the MBR and tells the kernel; resize2fs then grows the mounted file system online.
+# Run by mrg5-growroot.service, once (/var/lib/mrg5/root-grown).
+set -eu
+src=$(findmnt -no SOURCE /)
+name=${src#/dev/}
+disk=/dev/$(lsblk -no PKNAME "$src")
+part=$(cat "/sys/class/block/$name/partition")
+# only the USB Boot drive: never touch an internal disk
+[ "$(lsblk -dno TRAN "$disk")" = usb ] || { echo "root $src is not on a USB drive; nothing to do"; exit 0; }
+echo "growing $src (partition $part of $disk)"
+rc=0
+growpart "$disk" "$part" || rc=$?
+case $rc in
+    0) ;;
+    1) echo "partition already fills the drive" ;;     # NOCHANGE
+    *) echo "growpart failed ($rc)" >&2; exit 1 ;;
+esac
+resize2fs "$src"
+mkdir -p /var/lib/mrg5
+touch /var/lib/mrg5/root-grown
+df -h /

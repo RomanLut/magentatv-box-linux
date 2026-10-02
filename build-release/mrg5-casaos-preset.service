@@ -1,0 +1,17 @@
+# /etc/systemd/system/mrg5-casaos-preset.service (checks/54, "USB Boot"): the CasaOS account
+# user / user12345 and the guest share /DATA at the first start (mrg5-casaos-preset).
+[Unit]
+Description=MRG5 first boot: CasaOS account and DATA share
+ConditionPathExists=!/var/lib/mrg5/casaos-preset-done
+Wants=casaos-gateway.service casaos-user-service.service casaos.service
+After=casaos-gateway.service casaos-user-service.service casaos.service casaos-local-storage.service smbd.service
+StartLimitIntervalSec=0
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/mrg5-casaos-preset
+Restart=on-failure
+RestartSec=30
+
+[Install]
+WantedBy=multi-user.target

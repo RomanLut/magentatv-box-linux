@@ -1,0 +1,13 @@
+# /etc/systemd/system/mrg5-growroot.service (checks/54, "USB Boot"): grow the root to the end of
+# the USB drive at the first start (mrg5-growroot).
+[Unit]
+Description=MRG5 first boot: grow the root file system to the USB drive
+ConditionPathExists=!/var/lib/mrg5/root-grown
+After=local-fs.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/mrg5-growroot
+
+[Install]
+WantedBy=multi-user.target

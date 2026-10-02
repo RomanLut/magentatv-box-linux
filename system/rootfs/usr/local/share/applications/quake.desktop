@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=Quake
+Comment=Classic first person shooter
+Icon=quake
+# /usr/local/bin/quake, not the quake package's /usr/games/quake: it offers to download the
+# shareware data on first use (checks/41, "Quake"). This copy in /usr/local/share/applications
+# takes the place of the package's menu entry.
+Exec=/usr/local/bin/quake
+Categories=Game;ActionGame;
+Keywords=first person shooter;fps;3d;deathmatch;quake 1;

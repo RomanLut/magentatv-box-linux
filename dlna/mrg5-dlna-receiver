@@ -1,0 +1,36 @@
+#!/opt/macast/bin/python3
+# mrg5-dlna-receiver (checks/41, "DLNA receiver"): the box as a DLNA media renderer named "MRG5 TV".
+# Anything cast to it (Windows "Cast to Device", BubbleUPnP, VLC, ...) plays full screen on the TV in
+# mpv, over the launcher, which shows again when playback ends. Macast's command-line service
+# (xfangfang/Macast 0.65.post1, GPL-3.0, in /opt/macast) does the UPnP side; this starts it as a
+# system service:
+#  - pystray's dummy backend: Macast imports its tray code even without a tray, and pystray's X
+#    backend would need the X server at import time; the service starts before the launcher's X
+#  - CherryPy's autoreloader off: Macast normally runs frozen, where CherryPy leaves it off; for a
+#    service it only watches module files to restart the process
+#  - first start: the box's settings (name, full screen, no hardware decoding, fixed port) unless
+#    a settings file exists; Macast adds its own device id (USN) to it, so every box gets its own
+import json
+import os
+
+os.environ.setdefault("PYSTRAY_BACKEND", "dummy")
+
+SETTINGS = "/root/.config/Macast/macast_setting.json"
+DEFAULTS = {
+    "DLNA_FriendlyName": "MRG5 TV",
+    "ApplicationPort": 1068,   # Macast renames itself "Macast(nnnn)" when the bound port changes
+    "CheckUpdate": 0,
+    "PlayerSize": 4,           # full screen
+    "PlayerPosition": 4,       # centre
+    "PlayerHW": 0,             # no --hwdec: the box has no video decoder driver
+}
+if not os.path.exists(SETTINGS):
+    os.makedirs(os.path.dirname(SETTINGS), exist_ok=True)
+    with open(SETTINGS, "w") as f:
+        json.dump(DEFAULTS, f, indent=4, sort_keys=True)
+
+import cherrypy  # noqa: E402
+cherrypy.config.update({"engine.autoreload.on": False})
+
+from macast.macast import cli  # noqa: E402
+cli()

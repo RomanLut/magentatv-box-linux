@@ -1,0 +1,171 @@
+#!/usr/bin/env python3
+"""/usr/local/bin/rcu-home-exit (checks/41, "YouTube: TV interface"): the
+MagentaTV remote's Home button closes YouTube TV (youtube-tv), and its volume
+buttons set the system volume (checks/34, "The remote control").
+
+The remote is a BLE keyboard ("DTG5-RCU1 Keyboard") and its Home button sends
+the ordinary keyboard KEY_HOME (scan 0x7004a), so a desktop-wide shortcut would
+take Home away from every keyboard. This service reads only the remote's own
+input device, without grabbing it (X still gets every key), and on a Home press
+ends the youtube-tv Chromium: SIGTERM, Chromium's clean shutdown, as
+chromium-single does; SIGKILL if it still runs after 15 s.
+
+The device exists only while the remote is connected (it sleeps when idle and
+reconnects on a key press), so the service waits for it and waits again when it
+goes away. Run by mrg5-rcu-home-exit.service.
+
+Volume: Vol+/Vol- (KEY_VOLUMEUP/DOWN) step the default PulseAudio sink (the system-mode
+server, sink mrg5_hdmi) by 10 %, capped at 100 % (above it PulseAudio applies software gain
+and clips; checks/43); held, about 7 steps a second; a step also unmutes. Mute
+(KEY_MUTE) toggles. This is the one place the volume changes, so it is the same in the
+launcher, YouTube, Kodi (its volume keys are mapped to nothing) and games. While Xfce's
+panel runs, its PulseAudio plugin handles these keys itself (with its volume popup), so
+this service leaves them alone there.
+
+Power (KEY_POWER): starts the soft standby (mrg5-standby on, as its own transient unit, since
+it then waits for a key to wake). In standby this service does nothing with Power: any key
+wakes the box, and mrg5-standby's own key watcher does that, so a Power press cannot wake and
+start standby again at the same time.
+"""
+import os, re, select, signal, struct, subprocess, sys, time
+
+NAME = "DTG5-RCU1 Keyboard"
+KEY_HOME = 102
+KEY_MUTE, KEY_VOLUMEDOWN, KEY_VOLUMEUP = 113, 114, 115
+KEY_POWER = 116
+STANDBY = "/usr/local/bin/mrg5-standby"
+STANDBY_STATE = "/run/mrg5-standby"
+STEP = 10                            # percent per press
+REPEAT_GAP = 0.15                    # s between steps while a volume key is held
+PULSE_ENV = dict(os.environ, PULSE_SERVER="unix:/var/run/pulse/native")
+PROFILE = "--user-data-dir=/home/browser/.config/youtube-tv "
+EV = struct.Struct("llHHi")          # struct input_event on 32-bit ARM
+
+
+def log(*a):
+    print(*a, flush=True)
+
+
+def remote_device():
+    name = None
+    for line in open("/proc/bus/input/devices"):
+        if line.startswith("N: Name="):
+            name = line.split("=", 1)[1].strip().strip('"')
+        elif line.startswith("H: Handlers=") and name == NAME:
+            for h in line.split("=", 1)[1].split():
+                if h.startswith("event"):
+                    return "/dev/input/" + h
+    return None
+
+
+def youtube_tv_pids():
+    """Browser processes (not --type= children) on the youtube-tv profile. Chromium
+    rewrites its command line into one string, so it is matched with spaces; the
+    runuser that started it carries the same arguments, hence the comm check."""
+    pids = []
+    for d in os.listdir("/proc"):
+        if not d.isdigit():
+            continue
+        try:
+            if open("/proc/%s/comm" % d).read().strip() != "chromium":
+                continue
+            c = " " + open("/proc/%s/cmdline" % d, "rb").read().replace(b"\0", b" ").decode(errors="replace") + " "
+        except OSError:
+            continue
+        if "/chromium " in c and PROFILE in c and " --type=" not in c:
+            pids.append(int(d))
+    return pids
+
+
+def close_youtube_tv():
+    pids = youtube_tv_pids()
+    if not pids:
+        return
+    log("Home: closing youtube-tv", pids)
+    for p in pids:
+        try:
+            os.kill(p, signal.SIGTERM)
+        except OSError:
+            pass
+    for _ in range(15):
+        time.sleep(1)
+        pids = [p for p in pids if os.path.exists("/proc/%d" % p)]
+        if not pids:
+            return
+    for p in pids:
+        try:
+            os.kill(p, signal.SIGKILL)
+        except OSError:
+            pass
+
+
+def pactl(*args):
+    return subprocess.run(["pactl", *args], env=PULSE_ENV, capture_output=True, text=True,
+                          timeout=5)
+
+
+_last_step = 0.0
+
+
+def volume_key(code, val):
+    """val 1 = press, 2 = autorepeat while held."""
+    global _last_step
+    now = time.monotonic()
+    if val not in (1, 2) or (code == KEY_MUTE and val == 2):
+        return
+    if val == 2 and now - _last_step < REPEAT_GAP:
+        return
+    if subprocess.run(["pgrep", "-x", "xfce4-panel"], capture_output=True).returncode == 0:
+        return                       # Xfce's volume plugin takes the key
+    _last_step = now
+    if code == KEY_MUTE:
+        pactl("set-sink-mute", "@DEFAULT_SINK@", "toggle")
+        log("Mute:", pactl("get-sink-mute", "@DEFAULT_SINK@").stdout.strip())
+        return
+    m = re.search(r"(\d+)%", pactl("get-sink-volume", "@DEFAULT_SINK@").stdout)
+    cur = int(m.group(1)) if m else 100
+    new = max(0, min(100, cur + (STEP if code == KEY_VOLUMEUP else -STEP)))
+    pactl("set-sink-mute", "@DEFAULT_SINK@", "0")
+    pactl("set-sink-volume", "@DEFAULT_SINK@", "%d%%" % new)
+    log("Volume %s: %d%% -> %d%%" % ("+" if code == KEY_VOLUMEUP else "-", cur, new))
+
+
+def power_key():
+    if os.path.exists(STANDBY_STATE) or not os.path.exists(STANDBY):
+        return                     # in standby: the key watcher wakes the box
+    log("Power: standby")
+    subprocess.run(["systemd-run", "--no-block", "--collect", "--quiet",
+                    "--unit=mrg5-standby-%d" % int(time.time()), STANDBY, "on"])
+
+
+def listen(path):
+    fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
+    log("listening on", path)
+    try:
+        while True:
+            select.select([fd], [], [])
+            try:
+                data = os.read(fd, EV.size * 64)
+            except BlockingIOError:
+                continue
+            if not data:
+                return
+            for i in range(0, len(data) - EV.size + 1, EV.size):
+                _, _, typ, code, val = EV.unpack_from(data, i)
+                if typ == 1 and code == KEY_HOME and val == 1:
+                    close_youtube_tv()
+                elif typ == 1 and code == KEY_POWER and val == 1:
+                    power_key()
+                elif typ == 1 and code in (KEY_MUTE, KEY_VOLUMEDOWN, KEY_VOLUMEUP):
+                    volume_key(code, val)
+    except OSError as e:           # the remote went to sleep: ENODEV
+        log("remote gone:", e.strerror)
+    finally:
+        os.close(fd)
+
+
+while True:
+    path = remote_device()
+    if path:
+        listen(path)
+    time.sleep(1)

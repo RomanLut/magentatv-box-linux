@@ -1,0 +1,12 @@
+[Unit]
+Description=PulseAudio system-wide sound server (MRG5)
+After=sound.target
+
+[Service]
+Type=notify
+ExecStart=/usr/bin/pulseaudio --system --disallow-exit --disallow-module-loading=false --log-target=journal
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

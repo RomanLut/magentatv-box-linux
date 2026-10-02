@@ -1,0 +1,5 @@
+# Release images: published as GitHub Release assets, not in git (GitHub refuses files over 100 MB)
+release_images/
+
+# build output of kernel/build-kernel.sh and initramfs/build-initramfs.sh
+.build/

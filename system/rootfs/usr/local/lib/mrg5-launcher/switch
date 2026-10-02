@@ -1,0 +1,14 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 Roman Lut
+# /usr/local/lib/mrg5-launcher/switch desktop|console|reboot (checks/41, "TV launcher"):
+# the launcher's tiles that leave it. launcher.py starts this through systemd-run, so it
+# runs outside mrg5-launcher.service, which it stops. The launcher comes back at boot.
+case "$1" in
+desktop) systemctl stop mrg5-launcher.service
+         systemctl start mrg5-desktop.service ;;       # Xfce (start-desktop)
+console) systemctl stop mrg5-launcher.service
+         systemctl start getty@tty1.service ;;         # text console login on the TV
+reboot)  systemctl reboot ;;
+*)       echo "usage: switch desktop|console|reboot" >&2; exit 2 ;;
+esac

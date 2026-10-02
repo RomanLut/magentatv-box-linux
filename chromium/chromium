@@ -1,0 +1,10 @@
+#!/bin/sh
+# /usr/local/bin/chromium (checks/53): the "chromium" command, menu entry and
+# default browser of the box - Raspberry Pi's Chromium build in GPU mode.
+# From root (the desktop) it goes through chromium-as-browser, which runs it as
+# the user "browser" with the sandbox on; any other user gets it directly, on
+# that user's own profile.
+if [ "$(id -u)" = 0 ]; then
+	exec /usr/local/bin/chromium-as-browser "$@"
+fi
+exec /opt/rpi-chromium/usr/lib/chromium/chromium --use-angle=gles "$@"

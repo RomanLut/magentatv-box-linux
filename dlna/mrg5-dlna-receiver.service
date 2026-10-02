@@ -1,0 +1,15 @@
+# DLNA receiver "MRG5 TV" (checks/41, "DLNA receiver"): /usr/local/bin/mrg5-dlna-receiver
+[Unit]
+Description=DLNA receiver: plays what is cast to MRG5 TV on the TV
+Wants=network-online.target
+After=network-online.target pulseaudio.service avahi-daemon.service
+
+[Service]
+# mpv opens its window on the TV's display (the launcher's or the desktop's X) only while playing
+Environment=DISPLAY=:0 HOME=/root
+ExecStart=/usr/local/bin/mrg5-dlna-receiver
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

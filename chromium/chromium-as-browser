@@ -1,0 +1,43 @@
+#!/bin/sh
+# /usr/local/bin/chromium-as-browser (checks/53): run Chromium as the unprivileged
+# user "browser" on the root desktop.
+#
+# Chromium refuses to run as root with its sandbox, and --no-sandbox turns off
+# one of its security layers (and shows a warning bar on every start). Debian and
+# Raspberry Pi OS never run the browser as root; this box's desktop does, so
+# /usr/local/bin/chromium hands every root start over to here.
+#
+# The browser is Raspberry Pi's Chromium build (/opt/rpi-chromium) in GPU mode,
+# as Raspberry Pi's launcher starts it (--use-angle=gles: ANGLE on the V3D GLES
+# driver): hardware WebGL, video and page drawing on V3D, fast full screen and
+# windows (checks/53 §6). Debian's Chromium was removed on 2026-09-27; its
+# profile became ~/.config/chromium-rpi (the Raspberry Pi build is newer and
+# upgraded a copy of it; the original is kept in ~/.config/chromium).
+#
+#   X      the display lets "browser" in by user name (xhost server-interpreted
+#          localuser, no cookie file to copy)
+#   sound  the system-wide PulseAudio at /var/run/pulse/native ("browser" is in
+#          pulse-access)
+#   files  downloads land in /home/browser/Downloads; /root is not readable
+#   one    a Chromium on another profile (a test session) is closed first:
+#          with two instances YouTube's full screen does not hold
+#          (chromium-single); on the same profile Chromium itself hands the
+#          start to the running instance
+U=browser
+H=/home/$U
+UID_B=$(id -u $U) || exit 1
+PROF=$H/.config/chromium-rpi
+for a in "$@"; do case "$a" in --user-data-dir=*) PROF=${a#--user-data-dir=} ;; esac; done
+/usr/local/bin/chromium-single "$PROF" > /dev/null
+[ -n "$DISPLAY" ] && xhost +SI:localuser:$U > /dev/null
+cd "$H" || exit 1
+exec runuser -u $U -- env -i \
+	HOME="$H" USER=$U LOGNAME=$U SHELL=/bin/sh \
+	PATH=/usr/local/bin:/usr/bin:/bin \
+	LANG="${LANG:-C.UTF-8}" \
+	DISPLAY="$DISPLAY" \
+	XDG_RUNTIME_DIR=/run/user/$UID_B \
+	DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$UID_B/bus \
+	PULSE_SERVER=unix:/var/run/pulse/native \
+	/opt/rpi-chromium/usr/lib/chromium/chromium --user-data-dir="$PROF" \
+	--use-angle=gles "$@"

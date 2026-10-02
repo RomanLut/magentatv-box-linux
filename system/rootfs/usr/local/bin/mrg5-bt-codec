@@ -1,0 +1,31 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 Roman Lut
+# mrg5-bt-codec (mrg5-bt-codec.service; checks/34, "Bluetooth audio"): every Bluetooth audio
+# device plays with plain SBC (high quality, ~330 kbit/s) instead of PulseAudio's choice,
+# SBC XQ 552 kbit/s. The controller sits on a 1.5 Mbaud UART and shares its air time with
+# game pads; during Quake with a DualShock 4 connected it delivered 399 kbit/s to the
+# headphones, so XQ 552 skipped and SBC played with no gap over 24 ms (2026-10-03).
+# PulseAudio 16 has no setting for the codec, so this watches for new cards and switches
+# them through the module's own message (pactl send-message ... switch-codec).
+export PULSE_SERVER=unix:/var/run/pulse/native
+WANT=sbc
+
+fix() {
+	for c in $(pactl list short cards | awk '$2 ~ /^bluez_card\./ { print $2 }'); do
+		cur=$(pactl send-message "/card/$c/bluez" get-codec 2>/dev/null | tr -d '"')
+		# empty: no A2DP profile active (headset profile, or not ready yet)
+		if [ -n "$cur" ] && [ "$cur" != "$WANT" ]; then
+			pactl send-message "/card/$c/bluez" switch-codec "\"$WANT\"" >/dev/null &&
+				echo "$c: $cur -> $WANT"
+		fi
+	done
+}
+
+fix
+# ends when PulseAudio restarts; systemd starts it again
+pactl subscribe | while read -r line; do
+	case "$line" in
+	*"'new' on card"* | *"'change' on card"*) fix ;;
+	esac
+done

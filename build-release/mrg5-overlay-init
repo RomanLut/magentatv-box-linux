@@ -1,0 +1,73 @@
+#!/bin/sh
+# mrg5-overlay-init (checks/54, "EMMC + internal HDD"): /sbin/init of the EMMC + internal HDD
+# release (make-release.sh diverts Debian's /sbin/init, a link to systemd, with dpkg-divert).
+# The initramfs (stage1-root.sh) mounts the eMMC root and starts this as PID 1. It makes the
+# eMMC system a read-only base and sends every write to the internal HDD, the way
+# overlayRoot.sh does it on the Raspberry Pi (a tmpfs there, the HDD here):
+#   1. remount the eMMC root read-only;
+#   2. mount the HDD partition labelled MRG5HDD (made by mrg5-emmc-install) at /mnt/hdd;
+#   3. overlay: lower = the eMMC root, upper = MRG5HDD:/upper, mounted at /mnt/root;
+#   4. pivot_root into the overlay and start systemd.
+# The eMMC root stays visible read-only at /mrg5/lower, the HDD at /mrg5/hdd; fstab binds
+# /mrg5/hdd/DATA to /DATA and Docker's folders onto the HDD directly (Docker's overlay2
+# storage cannot run on an overlay root).
+# Without the HDD (not found within 60 s, or not mountable) the upper is a tmpfs: the system
+# runs, nothing is kept, and the eMMC is still not written (/mrg5/hdd/no-hdd tells the rest).
+# In the live installer (stick, /live/medium) it only starts systemd.
+PATH=/usr/sbin:/usr/bin:/sbin:/bin
+SYSTEMD=/lib/systemd/systemd
+LABEL=MRG5HDD
+
+[ "$$" = 1 ] || exec "$SYSTEMD" "$@"
+grep -q ' /live/medium ' /proc/mounts && exec "$SYSTEMD" "$@"
+log() { echo "mrg5-overlay: $*" > /dev/kmsg 2>/dev/null; echo "mrg5-overlay: $*"; }
+
+mount -o remount,ro / || log "the eMMC root could not be made read-only"
+mount -t tmpfs -o mode=0755,size=1M tmpfs /mnt || { log "no tmpfs on /mnt; starting without overlay"; exec "$SYSTEMD" "$@"; }
+mkdir -p /mnt/lower /mnt/hdd /mnt/root
+mount --bind / /mnt/lower
+
+dev=""
+i=0
+while [ $i -lt 60 ]; do
+    dev=$(blkid -c /dev/null -L "$LABEL" 2>/dev/null) && [ -n "$dev" ] && break
+    [ $i = 5 ] && log "waiting for the HDD ($LABEL)"
+    sleep 1
+    i=$((i + 1))
+done
+hdd=0
+if [ -n "$dev" ]; then
+    # as systemd-fsck would for an fstab entry: repair what is safe, then mount
+    e2fsck -p "$dev" > /dev/kmsg 2>&1
+    [ $? -ge 4 ] && log "e2fsck found errors on $dev it could not repair"
+    mount -t ext4 -o noatime "$dev" /mnt/hdd && hdd=1
+fi
+if [ $hdd = 1 ]; then
+    mkdir -p /mnt/hdd/upper /mnt/hdd/work /mnt/hdd/DATA /mnt/hdd/docker /mnt/hdd/containerd
+    if [ ! -e /mnt/hdd/.data-seeded ]; then
+        cp -a /DATA/. /mnt/hdd/DATA/ && touch /mnt/hdd/.data-seeded
+    fi
+    log "overlay on $dev"
+else
+    log "no HDD labelled $LABEL: changes are kept in RAM until the next start"
+    mount -t tmpfs -o mode=0755 tmpfs /mnt/hdd
+    mkdir -p /mnt/hdd/upper /mnt/hdd/work /mnt/hdd/DATA /mnt/hdd/docker /mnt/hdd/containerd
+    cp -a /DATA/. /mnt/hdd/DATA/ 2>/dev/null
+    touch /mnt/hdd/no-hdd
+fi
+
+if ! mount -t overlay overlay -o lowerdir=/mnt/lower,upperdir=/mnt/hdd/upper,workdir=/mnt/hdd/work /mnt/root; then
+    log "overlay failed; starting the read-only eMMC system"
+    exec "$SYSTEMD" "$@"
+fi
+mkdir -p /mnt/root/mrg5/lower /mnt/root/mrg5/hdd /mnt/root/mrg5/oldroot
+mount --move /mnt/lower /mnt/root/mrg5/lower
+mount --move /mnt/hdd /mnt/root/mrg5/hdd
+for m in dev proc sys; do
+    mount --move "/$m" "/mnt/root/$m"
+done
+cd /mnt/root || exec "$SYSTEMD" "$@"
+pivot_root . mrg5/oldroot
+# the old root: the eMMC mount (still at /mrg5/lower) and the small tmpfs
+umount -l /mrg5/oldroot 2>/dev/null
+exec chroot . "$SYSTEMD" "$@" < /dev/console > /dev/console 2>&1

@@ -1,0 +1,4 @@
+# The box takes the central role on incoming Bluetooth connections (mrg5-bt-central;
+# checks/34, "Bluetooth audio"). hci0 appears before udev starts (hci_h5 is built in); the
+# coldplug replays its add event.
+ACTION=="add", SUBSYSTEM=="bluetooth", KERNEL=="hci[0-9]*", ENV{DEVTYPE}=="host", RUN+="/usr/local/bin/mrg5-bt-central %k"

@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=Hide idle mouse pointer
+Comment=checks/53: the KMS driver has no cursor plane, so a visible pointer is drawn in software, and X never page-flips while one is shown (full-screen games and video are then copied on the CPU). unclutter hides it after 1 s without movement.
+Exec=unclutter --timeout 1
+OnlyShowIn=XFCE;
+X-GNOME-Autostart-enabled=true

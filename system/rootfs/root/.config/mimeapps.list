@@ -1,0 +1,5 @@
+[Default Applications]
+image/jpeg=org.xfce.ristretto.desktop
+
+[Added Associations]
+image/jpeg=org.xfce.ristretto.desktop;

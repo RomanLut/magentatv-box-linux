@@ -1,0 +1,48 @@
+# Build the MRG5 kernel (zImage with its rescue initramfs) from this repository's sources:
+# upstream Linux 6.18 + kernel/linux-6.18-mrg5.patch + kernel/config-mrg5, the initramfs from
+# initramfs/ (BusyBox, Dropbear and the init wrapper built from source), and the Bluetooth
+# firmware fetched by firmware/fetch-firmware.sh. The zImage and its .config are kept as the
+# run's artifact. The release images themselves are made on the box (build-release/), since they
+# are copies of a running system.
+name: Build kernel
+
+on:
+  push:
+    paths:
+      - 'kernel/**'
+      - 'initramfs/**'
+      - 'firmware/**'
+      - '.github/workflows/build-kernel.yml'
+  pull_request:
+    paths:
+      - 'kernel/**'
+      - 'initramfs/**'
+      - 'firmware/**'
+      - '.github/workflows/build-kernel.yml'
+  workflow_dispatch:
+
+jobs:
+  kernel:
+    # Ubuntu 24.04's gcc-arm-linux-gnueabihf 13.3 is the compiler the released kernel was built with
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            gcc-arm-linux-gnueabihf make bc bison flex libssl-dev libelf-dev cpio xz-utils \
+            bzip2 curl python3 file
+
+      - name: Build
+        run: kernel/build-kernel.sh "$RUNNER_TEMP/mrg5"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: zImage-mrg5
+          path: |
+            ${{ runner.temp }}/mrg5/zImage-mrg5
+            ${{ runner.temp }}/mrg5/out/.config
+          if-no-files-found: error

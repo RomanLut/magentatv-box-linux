@@ -1,0 +1,48 @@
+From 8cea76a2d8a87b8b08aae2a4ca77f3171dd4ff12 Mon Sep 17 00:00:00 2001
+From: "Juan A. Suarez Romero" <jasuarez@igalia.com>
+Date: Thu, 17 Feb 2022 19:17:29 +0100
+Subject: [PATCH xserver 1/4] fb: do not use pixman_blt to perform copies
+
+In the Rpi, using memcpy() is faster than Pixman blit, as the memcpy()
+is provided by an optimized library specifically designed for the Rpi.
+---
+ fb/fbcopy.c | 17 -----------------
+ 1 file changed, 17 deletions(-)
+
+diff --git a/fb/fbcopy.c b/fb/fbcopy.c
+index 3af128ada..1ddbcc1f2 100644
+--- a/fb/fbcopy.c
++++ b/fb/fbcopy.c
+@@ -52,20 +52,6 @@ fbCopyNtoN(DrawablePtr pSrcDrawable,
+     fbGetDrawable(pDstDrawable, dst, dstStride, dstBpp, dstXoff, dstYoff);
+ 
+     while (nbox--) {
+-#ifndef FB_ACCESS_WRAPPER       /* pixman_blt() doesn't support accessors yet */
+-        if (pm == FB_ALLONES && alu == GXcopy && !reverse && !upsidedown) {
+-            if (!pixman_blt
+-                ((uint32_t *) src, (uint32_t *) dst, srcStride, dstStride,
+-                 srcBpp, dstBpp, (pbox->x1 + dx + srcXoff),
+-                 (pbox->y1 + dy + srcYoff), (pbox->x1 + dstXoff),
+-                 (pbox->y1 + dstYoff), (pbox->x2 - pbox->x1),
+-                 (pbox->y2 - pbox->y1)))
+-                goto fallback;
+-            else
+-                goto next;
+-        }
+- fallback:
+-#endif
+         fbBlt(src + (pbox->y1 + dy + srcYoff) * srcStride,
+               srcStride,
+               (pbox->x1 + dx + srcXoff) * srcBpp,
+@@ -74,9 +60,6 @@ fbCopyNtoN(DrawablePtr pSrcDrawable,
+               (pbox->x1 + dstXoff) * dstBpp,
+               (pbox->x2 - pbox->x1) * dstBpp,
+               (pbox->y2 - pbox->y1), alu, pm, dstBpp, reverse, upsidedown);
+-#ifndef FB_ACCESS_WRAPPER
+- next:
+-#endif
+         pbox++;
+     }
+     fbFinishAccess(pDstDrawable);
+-- 
+2.30.2

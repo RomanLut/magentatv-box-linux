@@ -1,0 +1,58 @@
+#!/bin/sh
+# uninstall-init (checks/54, "Uninstall image"): PID 1 of the uninstall stick's live image
+# (make-uninstall.sh). BOLT has already run "unsetenv STARTUP;" from the stick's boot.ini;
+# this reads BOLT's environment block (flash0.nvram, read-only) and shows on the TV whether
+# STARTUP is gone. It writes nothing and never ends (PID 1): the owner unplugs the power.
+export PATH=/bin
+T=/dev/tty1
+
+setfont -C $T /usr/share/consolefonts/Uni3-TerminusBold32x16.psf 2>/dev/null
+printf '\033[?25l' > $T                     # no cursor
+
+# BOLT's environment: CFE-style records, type byte (0x01 = variable, 0x00 = end of the list,
+# 0xff = blank flash; bit 7 = 16-bit length), length, then the data: a flags byte and
+# "NAME=value" (checks/42 §3a). unsetenv turned STARTUP's type byte from 0x01 to 0x00.
+nv=$(awk '$4 == "\"flash0.nvram\"" { sub(":", "", $1); print "/dev/" $1 "ro" }' /proc/mtd)
+state=unknown
+if [ -n "$nv" ] && [ -c "$nv" ]; then
+    state=$(od -An -v -tu1 "$nv" | awk '
+        { for (i = 1; i <= NF; i++) b[n++] = $i }
+        END {
+            p = 0
+            while (p < n) {
+                t = b[p]
+                if (t == 0 || t == 255) break
+                if (t >= 128) { len = b[p + 1] * 256 + b[p + 2]; d = p + 3 }
+                else { len = b[p + 1]; d = p + 2 }
+                if (t == 1) {
+                    s = ""
+                    for (i = d + 1; i < d + 9 && i < n; i++) s = s sprintf("%c", b[i])
+                    if (s == "STARTUP=") { print "set"; exit }
+                }
+                p = d + len
+            }
+            print "clear"
+        }')
+fi
+
+screen() {
+    { printf '\033[2J\033[H\n\n'; for l in "$@"; do printf '   %s\n\n' "$l"; done; } > $T
+}
+case "$state" in
+clear)
+    screen "Uninstall done: STARTUP is removed from the boot flash." "" \
+           "Unplug the power and remove this stick." "" \
+           "Without a stick the box now tries to restore its original firmware" \
+           "from the internet: about half an hour, with no picture." "" \
+           "WARNING: that recovery FORMATS THE INTERNAL HDD." \
+           "Take the HDD out first if it holds anything you need." ;;
+set)
+    screen "Uninstall FAILED: STARTUP is still set in the boot flash." "" \
+           "Unplug the power and try again with this stick." ;;
+*)
+    screen "Uninstall: the boot flash could not be read ($nv)." "" \
+           "BOLT has run the uninstall command, but it could not be checked." \
+           "Unplug the power and remove this stick." ;;
+esac
+
+while :; do sleep 3600; done

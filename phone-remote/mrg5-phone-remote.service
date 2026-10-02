@@ -1,0 +1,15 @@
+# Phone remote (checks/41, "Phone remote"): /usr/local/bin/mrg5-phone-remote
+[Unit]
+Description=Phone remote: touchpad and keyboard from a phone's browser
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+# the TV's X display; until the launcher's X is up the program exits and is started again
+Environment=DISPLAY=:0
+ExecStart=/usr/local/bin/mrg5-phone-remote
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
