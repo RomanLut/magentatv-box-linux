@@ -1,8 +1,7 @@
 #!/bin/bash
-# Build Mesa's V3D driver from Debian's own mesa 22.3.6 source with the five
-# V3D 3.3 compiler fixes (mesa-22.3.6-v3d33.patch) and our KMS driver on the
-# kmsro list (work/kms-20260921/mesa-22.3.6-kmsro-mrg5.patch), natively on the
-# box.  Both patch files must sit next to this script in /root/mesa-v3d.
+# Build Mesa's V3D driver from Debian's own mesa 22.3.6 source with both
+# patches and all later V3D 3.3 fix scripts, natively on the box.
+# Keep the entire mesa/ directory together beside this script.
 #
 # Same version, same distribution toolchain and libraries as the installed
 # libEGL_mesa / libgbm / libglapi, so the driver stays ABI-compatible with them.
@@ -10,7 +9,8 @@
 #
 # Output: /root/mesa-v3d/v3d_dri.so  (install with install-mesa-v3d.sh)
 # Log:    /root/mesa-v3d/build.log
-set -eu
+set -euo pipefail
+HERE=$(cd "$(dirname "$0")" && pwd)
 W=/root/mesa-v3d
 mkdir -p "$W"
 cd "$W"
@@ -46,7 +46,7 @@ fi
 cd "$W/src"
 
 if ! grep -q "A single-threaded shader (V3D 3.x" src/broadcom/compiler/nir_to_vir.c; then
-    patch -p1 < "$W/mesa-22.3.6-v3d33.patch"
+    patch -p1 < "$HERE/mesa-22.3.6-v3d33.patch"
 fi
 # the one that makes the hardware draw at all: vpmwt on V3D 3.x (checks/53)
 grep -q "c->devinfo->ver <= 42)" src/broadcom/compiler/nir_to_vir.c ||
@@ -57,8 +57,10 @@ grep -q 'name="VG mode"' src/broadcom/cle/v3d_packet_v33.xml ||
 
 # our KMS driver on kmsro's list (work/kms-20260921/mesa-22.3.6-kmsro-mrg5.patch)
 if ! grep -q "DEFINE_LOADER_DRM_ENTRYPOINT(mrg5)" src/gallium/targets/dri/target.c; then
-    patch -p1 < "$W/mesa-22.3.6-kmsro-mrg5.patch"
+    patch -p1 < "$HERE/mesa-22.3.6-kmsro-mrg5.patch"
 fi
+
+bash "$HERE/apply-fixes.sh" "$W/src"
 
 if [ ! -d build ]; then
     meson setup build \

@@ -47,10 +47,29 @@ export CFLAGS="-mcpu=cortex-a53 -mfpu=neon-fp-armv8 -mfloat-abi=hard"
 export CXXFLAGS="$CFLAGS"
 CC=$X-gcc CXX=$X-g++
 cd /src
-for r in libretro/libretro-prboom libretro/ecwolf libretro/vitaquake2 libretro/xrick-libretro scummvm/scummvm; do
-	[ -d ${r#*/} ] || git clone -q --depth 1 https://github.com/$r.git
-	echo "${r#*/} $(git -C ${r#*/} rev-parse --short HEAD)"
-done
+# Exact revisions from the release build volume. Refuse local source edits rather
+# than discarding them; ignored compiler outputs may remain for incremental builds.
+while read -r r revision; do
+	d=${r#*/}
+	if [ ! -d "$d" ]; then
+		git init -q "$d"
+		git -C "$d" remote add origin "https://github.com/$r.git"
+	fi
+	[ -z "$(git -C "$d" status --porcelain)" ] || {
+		echo "ERROR: $d has local changes; use a clean build volume" >&2; exit 1;
+	}
+	git -C "$d" cat-file -e "$revision^{commit}" 2>/dev/null ||
+		git -C "$d" fetch -q --depth 1 "https://github.com/$r.git" "$revision"
+	git -C "$d" checkout -q --detach "$revision"
+	[ "$(git -C "$d" rev-parse HEAD)" = "$revision" ] || exit 1
+	echo "$r $revision"
+done <<'REVISIONS'
+libretro/libretro-prboom e5db549b6c85fc500b3a559efe2dc00870521c5d
+libretro/ecwolf 0cccd9a85d7ffa33fb695691a8a5db246606518c
+libretro/vitaquake2 4b333fe18e8816974f04432af01f87654ae16e21
+libretro/xrick-libretro fcfde3623a04b4e986548e06d46630fcd0bd1e18
+scummvm/scummvm 238d37cdc9e2817fe27964ebca752fe96fdef1da
+REVISIONS
 mkdir -p out ship
 
 step() { echo "=== $1 $(date +%T)"; }

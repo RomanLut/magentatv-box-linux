@@ -24,9 +24,9 @@ die() { echo "ERROR: $*" >&2; exit 1; }
 
 [ "$(id -u)" = 0 ] || die "run as root"
 [ -f "$BOOTDIR/$KERNEL" ] && [ -f "$BOOTDIR/$DTB" ] || die "no $KERNEL and $DTB in BOOTDIR=$BOOTDIR"
-# only a release kernel: built by work/kms-20260921/build-release-kernel.sh, whose .release file
+# only a release kernel: built by kernel/build-kernel.sh, whose .release file
 # records its sha256 and that its rescue initramfs holds no SSH keys (owner, 2026-10-03)
-[ -f "$BOOTDIR/$KERNEL.release" ] || die "$KERNEL has no .release file (build it with build-release-kernel.sh)"
+[ -f "$BOOTDIR/$KERNEL.release" ] || die "$KERNEL has no .release file (build it with kernel/build-kernel.sh)"
 grep -qx "sha256=$(sha256sum "$BOOTDIR/$KERNEL" | cut -d' ' -f1)" "$BOOTDIR/$KERNEL.release" ||
     die "$KERNEL does not match its .release file"
 grep -qx "rescue_ssh_keys=none.*" "$BOOTDIR/$KERNEL.release" || die "$KERNEL's rescue initramfs may hold SSH keys"

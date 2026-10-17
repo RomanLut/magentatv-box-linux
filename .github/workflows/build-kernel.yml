@@ -42,7 +42,10 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: zImage-mrg5
+          # .config is hidden; upload only the three explicit files below.
+          include-hidden-files: true
           path: |
             ${{ runner.temp }}/mrg5/zImage-mrg5
+            ${{ runner.temp }}/mrg5/zImage-mrg5.release
             ${{ runner.temp }}/mrg5/out/.config
           if-no-files-found: error

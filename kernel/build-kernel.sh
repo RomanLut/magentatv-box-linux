@@ -25,6 +25,7 @@ URL=https://cdn.kernel.org/pub/linux/kernel/v6.x/$V.tar.xz
 SHA=9106a4605da9e31ff17659d958782b815f9591ab308d03b0ee21aad6c7dced4b
 
 mkdir -p "$B"
+rm -f "$B/zImage-mrg5.release"
 [ -f "$B/$V.tar.xz" ] || curl -fL --retry 3 -o "$B/$V.tar.xz" "$URL"
 echo "$SHA  $B/$V.tar.xz" | sha256sum -c --quiet
 
@@ -56,5 +57,6 @@ echo "== zImage"
 make -C "$B/$V" O="$B/out" ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- -j"$JOBS" zImage > "$B/build.log" 2>&1 ||
     { tail -40 "$B/build.log"; exit 1; }
 cp "$B/out/arch/arm/boot/zImage" "$B/zImage-mrg5"
+python3 "$HERE/certify-release.py" "$B/out" "$B/zImage-mrg5"
 ls -l "$B/zImage-mrg5"
 sha256sum "$B/zImage-mrg5"

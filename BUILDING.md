@@ -34,10 +34,14 @@ kernel/build-kernel.sh            # result: kernel/.build/zImage-mrg5
 2. builds the initramfs (`initramfs/build-initramfs.sh`: BusyBox 1.37.0, Dropbear 2025.88 with
    musl.cc's toolchain, the init wrapper);
 3. fetches the Bluetooth firmware and makes its config (`firmware/fetch-firmware.sh`);
-4. builds `zImage` with `config-mrg5`.
+4. builds `zImage` with `config-mrg5`;
+5. checks the generated initramfs (including its compressed copy linked into `vmlinux`)
+   for an empty rescue `authorized_keys` and absence of key material, then writes
+   `zImage-mrg5.release` with the kernel and initramfs hashes. A failed build or check leaves
+   no certificate for that output image.
 
 The GitHub Action [build-kernel.yml](.github/workflows/build-kernel.yml) runs the same on every
-change to these folders and keeps the zImage as the run's artifact. The released kernel was built
+change to these folders and keeps the zImage and its `.release` certificate as the run's artifact. The released kernel was built
 with Ubuntu 24.04's `arm-linux-gnueabihf-gcc` 13.3. A rebuild is the same source and configuration,
 but not bit-identical, because the build time and host are part of the image.
 
@@ -65,7 +69,16 @@ defects 12-36, applied in this order: `mesa-tfuphys.py`, `mesa-ownscanout.py`, `
 `mesa-emptybin33.py`, `mesa-tex4words33.py`, `mesa-vecalign33.py`, `mesa-xoruif33.py`,
 `mesa-samplemask33.py`, `mesa-mszs33.py`, `mesa-loadflush33.py`, `mesa-mstex33.py`,
 `mesa-vid33.py`, `mesa-blittfu33.py` (`mesa-ldvary.py` is defect 11 of the patch as a script).
-`build-mesa-v3d.sh` builds on the box, `install-mesa-v3d.sh` installs and sets the hold.
+`build-mesa-v3d.sh` builds on the box: it applies both patches and calls `apply-fixes.sh`
+to run all 27 later fix scripts above with their required source directories, before compiling.
+Keep the entire `mesa/` directory together; patches and scripts are found beside the build
+script. `install-mesa-v3d.sh` installs and sets the hold.
+
+`retroarch-cores/build-cores.sh` pins PrBoom, ECWolf, vitaQuake 2, XRick and ScummVM to the
+full commit IDs from the original release build. It fetches those exact commits, checks them
+out detached, and refuses existing source trees with local changes. It does not track upstream
+branch heads. Toolchains and Debian packages still come from the configured repositories;
+this is source revision pinning, not a promise of bit-identical binaries.
 
 The X server's modesetting driver is Raspberry Pi's xorg-server 21.1.7-3+rpt3+deb12u12 with its
 msdri3 patches (0001-0003) and ours (`mrg5-msdri3-*.py`), built by `build-msdri3.sh` and installed
@@ -75,15 +88,21 @@ with `dpkg-divert`.
 
 The images are copies of a running, installed system, made on the box itself:
 
+First build the kernel as above. Copy **both** `kernel/.build/zImage-mrg5` and
+`kernel/.build/zImage-mrg5.release`, plus `devicetree/dtb-mrg5-release.bin`, to
+`/root/emmc-release/` on the build system alongside the files from `build-release/`.
+The image builders verify the certificate's kernel hash and rescue-key check. Keep the
+certificate with the exact image that generated it; do not create a sidecar by hand.
+
 ```sh
 # on the system the releases are built from, as root, with build-release/ in /root/emmc-release
 # and the kernel and device tree next to it
-systemd-run --wait --setenv=EDITION=usb      --setenv=VERSION=<v> /root/emmc-release/make-release.sh
-systemd-run --wait --setenv=EDITION=emmc     --setenv=VERSION=<v> /root/emmc-release/make-release.sh
-systemd-run --wait --setenv=EDITION=emmc-hdd --setenv=VERSION=<v> /root/emmc-release/make-release.sh
+systemd-run --wait --setenv=KERNEL=zImage-mrg5 --setenv=EDITION=usb      --setenv=VERSION=<v> /root/emmc-release/make-release.sh
+systemd-run --wait --setenv=KERNEL=zImage-mrg5 --setenv=EDITION=emmc     --setenv=VERSION=<v> /root/emmc-release/make-release.sh
+systemd-run --wait --setenv=KERNEL=zImage-mrg5 --setenv=EDITION=emmc-hdd --setenv=VERSION=<v> /root/emmc-release/make-release.sh
 /root/emmc-release/make-image.sh /srv/mrg5-release     <name>.img MRG5-INST   # EMMC Only
 /root/emmc-release/make-image.sh /srv/mrg5-release-hdd <name>.img MRG5-INST   # EMMC + internal HDD
-/root/emmc-release/make-uninstall.sh && /root/emmc-release/make-image.sh /srv/mrg5-uninstall <name>.img MRG5-UNINST
+KERNEL=zImage-mrg5 /root/emmc-release/make-uninstall.sh && /root/emmc-release/make-image.sh /srv/mrg5-uninstall <name>.img MRG5-UNINST
 ```
 
 `make-release.sh` copies the running system, removes everything personal (home folders by allow
