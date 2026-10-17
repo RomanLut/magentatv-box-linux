@@ -31,7 +31,7 @@ controller can be paired).
 | Video | HDMI at 1080p50, framebuffer console, X11; 3D GPU (Broadcom V3D) with OpenGL ES 3.0. Video is decoded on the CPU: YouTube (TV interface) at 720p, Kodi and mpv |
 | Sound | HDMI audio, as an ordinary ALSA sound card (PulseAudio); Bluetooth headphones and speakers |
 | Remote | the original MagentaTV Bluetooth remote works as a keyboard: arrows, OK, Back, Home, volume keys; Power puts the box into soft standby. USB or Bluetooth  keyboards and mice work too |
-| Bluetooth | game pads, headphones and other devices paired from the launcher's settings (*Pair Bluetooth Device*) |
+| Bluetooth | game pads, headphones and other devices paired from the launcher's settings dialog |
 | Game pads | DualShock 4, DualShock 3, Xbox and other Bluetooth or USB game pads |
 | Games | RetroArch with cores for NES, SNES, Game Boy, GBA, Mega Drive, PC Engine, PlayStation, N64 and PSP; the free games from RetroArch's Content Downloader: Doom and Wolfenstein 3D shareware, the Quake II demo, ScummVM's freeware adventures; Quake (the shareware is downloaded on first start); Luanti |
 | Storage | internal SATA hard disk, eMMC, USB storage |
@@ -42,8 +42,8 @@ controller can be paired).
 | Other | front LEDs show start-up and network state; soft standby from the remote's Power key |
 
 Not supported: DRM and content protection (streaming services that need Widevine), the MagentaTV
-service itself, hardware video decoding (the chip's video decoder has no Linux driver), and Chrome's
-*Cast* button (it only talks to Google Cast devices; use the DLNA receiver instead).
+service itself, hardware video decoding (the chip's video decoder has no Linux driver), Chrome's
+*Cast*
 
 ## How to install
 
