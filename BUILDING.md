@@ -31,8 +31,10 @@ kernel/build-kernel.sh            # result: kernel/.build/zImage-mrg5
 
 `build-kernel.sh`:
 1. downloads Linux 6.18 from kernel.org and applies `linux-6.18-mrg5.patch`;
-2. builds the initramfs (`initramfs/build-initramfs.sh`: BusyBox 1.37.0, Dropbear 2025.88 with
-   musl.cc's toolchain, the init wrapper);
+2. builds the initramfs (`initramfs/build-initramfs.sh`: BusyBox 1.37.0, musl 1.2.5,
+   Dropbear 2025.88 linked statically against musl, and the init wrapper). musl is built from
+   SHA-256-checked source using Ubuntu/Debian's ARM compiler; its source is downloaded from
+   Buildroot's mirror with upstream as a fallback. No prebuilt musl.cc toolchain is needed;
 3. fetches the Bluetooth firmware and makes its config (`firmware/fetch-firmware.sh`);
 4. builds `zImage` with `config-mrg5`;
 5. checks the generated initramfs (including its compressed copy linked into `vmlinux`)
