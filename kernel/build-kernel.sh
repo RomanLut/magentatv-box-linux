@@ -12,7 +12,7 @@
 #   4. config-mrg5 (the configuration of the released kernel) with the three paths of this
 #      build, then make zImage.
 #
-# Needs: gcc-arm-linux-gnueabihf, make, bc, bison, flex, libssl-dev, cpio, xz-utils, curl,
+# Needs: gcc-arm-linux-gnueabihf, libc6-dev-armhf-cross, make, bc, bison, flex, libssl-dev, cpio, xz-utils, curl,
 # python3. The result is the released kernel's source and configuration; a rebuild is not
 # bit-identical (build time, host and number are part of the image).
 set -euo pipefail

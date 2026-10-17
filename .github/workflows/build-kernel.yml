@@ -30,10 +30,12 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Build tools
+        # libc6-dev-armhf-cross is only a Recommends of the cross compiler; BusyBox and the init
+        # wrapper link statically against its glibc
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            gcc-arm-linux-gnueabihf make bc bison flex libssl-dev libelf-dev cpio xz-utils \
+            gcc-arm-linux-gnueabihf libc6-dev-armhf-cross make bc bison flex libssl-dev libelf-dev cpio xz-utils \
             bzip2 curl python3 file
 
       - name: Build

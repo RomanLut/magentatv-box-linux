@@ -25,7 +25,7 @@ other projects are not kept here; the scripts download their sources and check t
 ## The kernel
 
 ```sh
-sudo apt-get install gcc-arm-linux-gnueabihf make bc bison flex libssl-dev libelf-dev cpio xz-utils bzip2 curl python3 file
+sudo apt-get install gcc-arm-linux-gnueabihf libc6-dev-armhf-cross make bc bison flex libssl-dev libelf-dev cpio xz-utils bzip2 curl python3 file
 kernel/build-kernel.sh            # result: kernel/.build/zImage-mrg5
 ```
 

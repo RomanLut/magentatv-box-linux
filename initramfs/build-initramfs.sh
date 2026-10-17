@@ -16,7 +16,8 @@
 # root/root/.ssh/authorized_keys is empty: nobody can log in over the network. The build stops if
 # a public key is put there (releases carry no maintainer access).
 #
-# Needs: arm-linux-gnueabihf-gcc (Debian/Ubuntu gcc-arm-linux-gnueabihf), make, curl, bzip2.
+# Needs: arm-linux-gnueabihf-gcc and its glibc (Debian/Ubuntu gcc-arm-linux-gnueabihf,
+# libc6-dev-armhf-cross), make, curl, bzip2.
 # Downloads BusyBox, Dropbear and musl source, each checked by SHA-256. musl is built with
 # the same Ubuntu/Debian ARM compiler, and its musl-gcc wrapper builds static Dropbear
 # (musl reads /etc/passwd itself, with no NSS plug-ins). No musl.cc toolchain is needed.
@@ -66,7 +67,15 @@ fetch() {   # fetch <sha256> <file> <url> [fallback url ...]
     return 1
 }
 
+run_logged() {   # run_logged <log> <command ...>: on failure, show the log's end
+    local log=$1
+    shift
+    "$@" > "$log" 2>&1 || { tail -40 "$log" >&2; echo "failed, full log: $log" >&2; return 1; }
+}
+
 mkdir -p "$W"
+echo 'int main(void){return 0;}' | arm-linux-gnueabihf-gcc -static -x c -o /dev/null - ||
+    { echo "arm-linux-gnueabihf-gcc cannot link a static program: install libc6-dev-armhf-cross" >&2; exit 1; }
 fetch "$BB_SHA" "$BB.tar.bz2" "$BB_URL"
 fetch "$DB_SHA" "$DB.tar.bz2" "$DB_URL"
 fetch "$MUSL_SHA" "$MUSL.tar.gz" "$MUSL_URL" "$MUSL_UPSTREAM"
@@ -76,7 +85,7 @@ rm -rf "$W/$BB"
 tar -C "$W" -xjf "$W/$BB.tar.bz2"
 cp "$HERE/src/busybox-1.37.0.config" "$W/$BB/.config"
 make -C "$W/$BB" CROSS_COMPILE=arm-linux-gnueabihf- oldconfig < /dev/null > /dev/null
-make -C "$W/$BB" CROSS_COMPILE=arm-linux-gnueabihf- -j"$JOBS" busybox > "$W/busybox.log" 2>&1
+run_logged "$W/busybox.log" make -C "$W/$BB" CROSS_COMPILE=arm-linux-gnueabihf- -j"$JOBS" busybox
 
 echo "== musl (ARM hard-float, static)"
 rm -rf "$W/$MUSL" "$W/musl-install"
@@ -85,9 +94,10 @@ tar -C "$W" -xzf "$W/$MUSL.tar.gz"
     cd "$W/$MUSL"
     CC=arm-linux-gnueabihf-gcc CROSS_COMPILE=arm-linux-gnueabihf- \
         ./configure --target=arm-linux-musleabihf --prefix="$W/musl-install" \
-        --disable-shared --enable-wrapper=gcc > "$W/musl-configure.log" 2>&1
-    make -j"$JOBS" > "$W/musl-build.log" 2>&1
-    make install > "$W/musl-install.log" 2>&1
+        --disable-shared --enable-wrapper=gcc > "$W/musl-configure.log" 2>&1 ||
+        { tail -40 "$W/musl-configure.log" >&2; exit 1; }
+    run_logged "$W/musl-build.log" make -j"$JOBS"
+    run_logged "$W/musl-install.log" make install
 )
 
 echo "== Dropbear"
@@ -98,8 +108,9 @@ echo '#define DROPBEAR_SVR_PASSWORD_AUTH 0' > "$W/$DB/localoptions.h"
     cd "$W/$DB"
     CC="$W/musl-install/bin/musl-gcc" AR=arm-linux-gnueabihf-ar \
         RANLIB=arm-linux-gnueabihf-ranlib ./configure --host=arm-linux-musleabihf --disable-zlib \
-        --enable-bundled-libtom --enable-static > "$W/dropbear-configure.log" 2>&1
-    make STATIC=1 PROGRAMS=dropbear -j"$JOBS" > "$W/dropbear.log" 2>&1
+        --enable-bundled-libtom --enable-static > "$W/dropbear-configure.log" 2>&1 ||
+        { tail -40 "$W/dropbear-configure.log" >&2; exit 1; }
+    run_logged "$W/dropbear.log" make STATIC=1 PROGRAMS=dropbear -j"$JOBS"
     arm-linux-gnueabihf-strip dropbear
     if arm-linux-gnueabihf-readelf -l dropbear | grep -q INTERP ||
             arm-linux-gnueabihf-readelf -d dropbear | grep -q NEEDED; then
