@@ -1,4 +1,4 @@
-# MagentaTV Box Linux
+# MagentaTV Box Play/Pro Linux
 
 Debian 12 for the Telekom **MagentaTV Box PLAY/PRO** (board MRG5, black 40868871 / white 40868874):
 a second life for a set-top box that the operator has retired.
